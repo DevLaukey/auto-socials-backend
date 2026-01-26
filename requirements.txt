@@ -1,0 +1,35 @@
+# Core API
+fastapi
+uvicorn
+gunicorn
+
+# Database
+sqlalchemy
+psycopg2-binary
+
+# Settings & validation
+pydantic
+pydantic-settings
+python-dotenv
+
+# Security & auth
+python-jose[cryptography]
+passlib[bcrypt]
+bcrypt<4.0
+cryptography
+
+# Background tasks
+celery
+redis
+
+# Social / external APIs
+instagrapi
+
+# Google APIs
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+
+# File uploads
+python-multipart

@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.db
+.env
+.git
+venv/
+node_modules/
+docker-compose.yml
+dump.rdb
+temp-*.rdb
+media/
