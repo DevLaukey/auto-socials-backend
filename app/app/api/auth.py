@@ -91,7 +91,7 @@ def register(payload: RegisterRequest):
 
 
 @router.post("/login", response_model=LoginResponse)
-def login(payload: LoginRequest, response: Response):
+def login(payload: LoginRequest, request: Request, response: Response):
     is_valid = verify_user(
         username=payload.email,
         password=payload.password,
@@ -105,12 +105,22 @@ def login(payload: LoginRequest, response: Response):
 
     access_token = create_access_token(data={"sub": payload.email})
 
+    # Detect if running behind HTTPS (Fly.io sets X-Forwarded-Proto)
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    is_https = forwarded_proto == "https" or request.url.scheme == "https"
+
+    # Always use secure cookies for cross-origin (non-localhost)
+    origin = request.headers.get("origin", "")
+    is_cross_origin = origin and "localhost" not in origin and "127.0.0.1" not in origin
+
+    use_secure_cookie = is_https or is_cross_origin
+
     response.set_cookie(
         key="access_token",
         value=access_token,
         httponly=True,
-        samesite="lax",
-        secure=False,
+        samesite="none" if use_secure_cookie else "lax",
+        secure=use_secure_cookie,
         max_age=60 * 60 * 24,
     )
 
@@ -118,8 +128,21 @@ def login(payload: LoginRequest, response: Response):
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-def logout(response: Response):
-    response.delete_cookie("access_token")
+def logout(request: Request, response: Response):
+    # Detect if running behind HTTPS
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    is_https = forwarded_proto == "https" or request.url.scheme == "https"
+
+    origin = request.headers.get("origin", "")
+    is_cross_origin = origin and "localhost" not in origin and "127.0.0.1" not in origin
+
+    use_secure_cookie = is_https or is_cross_origin
+
+    response.delete_cookie(
+        key="access_token",
+        samesite="none" if use_secure_cookie else "lax",
+        secure=use_secure_cookie,
+    )
 
 
 from pydantic import BaseModel
