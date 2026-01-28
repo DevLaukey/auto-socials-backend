@@ -33,21 +33,14 @@ def create_app() -> FastAPI:
         version="1.0.0",
     )
 
-    # ✅ CORS (REQUIRED FOR FRONTEND)
-    origins = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ]
-    # Add frontend URL from settings if configured
-    if settings.FRONTEND_BASE_URL:
-        origins.append(settings.FRONTEND_BASE_URL)
-
+    # ✅ CORS - Allow all origins (required for frontend on different domains)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=origins,
-        allow_credentials=True,
+        allow_origins=["*"],
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["*"],
     )
 
     # Database migrations are handled by the release command (app/migrate.py)
