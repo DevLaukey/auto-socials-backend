@@ -165,7 +165,7 @@ def create_post(
     )
 
 
-@router.get("/{post_id}")
+@router.get("/post/{post_id}")
 def get_post(
     post_id: int,
     current_user: dict = Depends(get_current_user),
