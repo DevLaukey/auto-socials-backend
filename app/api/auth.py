@@ -69,6 +69,13 @@ class RegisterResponse(BaseModel):
 class MeResponse(BaseModel):
     email: str
 
+class PasswordResetRequest(BaseModel):
+    email: str
+
+
+class PasswordResetConfirm(BaseModel):
+    token: str
+    new_password: str
 
 # -----------------------------
 # Auth routes
@@ -77,8 +84,8 @@ class MeResponse(BaseModel):
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 def register(payload: RegisterRequest):
     success = add_user(
-        username=payload.email,
-        password=hash_password(payload.password),
+        email=payload.email,
+        password_hash=hash_password(payload.password),
     )
 
     if not success:
@@ -96,6 +103,7 @@ def login(payload: LoginRequest, request: Request, response: Response):
         username=payload.email,
         password=payload.password,
     )
+
 
     if not is_valid:
         raise HTTPException(
@@ -304,46 +312,36 @@ def youtube_auth_status(
     }
 
 
+from app.services.auth_database import create_password_reset_token
 
-@router.post("/webhooks/zeroid")
-async def zeroid_webhook(request: Request):
-    payload = await request.json()
 
+@router.post("/password-reset/request")
+def request_password_reset(payload: PasswordResetRequest):
     """
-    Expected ZeroID payload (example — adjust if needed):
-    {
-        "event": "payment.success",
-        "reference": "...",
-        "amount": 1000,
-        "currency": "KES",
-        "status": "SUCCESS"
+    Returns success on success.
+    """
+
+    create_password_reset_token(payload.email)
+
+    return {
+        "message": "If an account exists for this email, a reset link has been sent."
     }
-    """
 
-    event = payload.get("event")
-    status = payload.get("status")
-    reference = payload.get("reference")
 
-    if not reference:
-        raise HTTPException(status_code=400, detail="Missing payment reference")
+from app.services.auth_database import reset_password_with_token
 
-    # Only act on successful payments
-    if event != "payment.success" or status != "SUCCESS":
-        return {"ok": False}  # acknowledge but ignore
 
-    with get_conn() as conn:
-        result = mark_payment_paid(conn, reference)
+@router.post("/password-reset/confirm")
+def confirm_password_reset(payload: PasswordResetConfirm):
+    success = reset_password_with_token(
+        token=payload.token,
+        new_password=payload.new_password,
+    )
 
-        # Already processed → safe retry
-        if result is None:
-            return {"ok": True}
-
-        user_id, plan_id = result
-
-        activate_subscription_for_user(
-            conn=conn,
-            user_id=user_id,
-            plan_id=plan_id
+    if not success:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired reset token",
         )
 
-    return {"ok": True}
+    return {"message": "Password reset successful"}

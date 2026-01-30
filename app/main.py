@@ -24,6 +24,9 @@ from app.api.groups import router as groups_router
 from app.api.posts import router as posts_router
 from app.media import router as media_router
 from app.api.payments import router as payments_router
+from app.api.proxies import router as proxies_router
+from app.api.admin import router as admin_router
+
 
 
 
@@ -54,6 +57,8 @@ def create_app() -> FastAPI:
     app.include_router(posts_router)
     app.include_router(media_router)
     app.include_router(payments_router)
+    app.include_router(proxies_router)
+    app.include_router(admin_router)
     app.include_router(
         subscriptions.router,
         prefix="",

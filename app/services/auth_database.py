@@ -24,14 +24,6 @@ AUTH_SCHEMA = "auth"
 
 _DB_LOCK = threading.Lock()
 
-#  Localhost
-# def get_conn():
-#     return psycopg2.connect(
-#         dsn=settings.AUTH_DATABASE_URL,
-#         cursor_factory=psycopg2.extras.RealDictCursor,
-#     )
-
-
 #  Hosted
 
 def get_conn():
@@ -88,8 +80,15 @@ def init_auth_db():
                     id SERIAL PRIMARY KEY,
                     email TEXT UNIQUE NOT NULL,
                     password_hash TEXT NOT NULL,
-                    created_at TIMESTAMPTZ DEFAULT NOW()
+
+                    -- Admin & lifecycle control
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+                    disabled_at TIMESTAMPTZ,
+
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
+
             """)
 
             # YOUTUBE TOKENS
@@ -119,7 +118,9 @@ def init_auth_db():
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS user_subscriptions (
                     id SERIAL PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL
+                        REFERENCES users(id)
+                        ON DELETE CASCADE,
                     plan_id INTEGER NOT NULL
                         REFERENCES subscription_plans(id)
                         ON DELETE RESTRICT,
@@ -182,6 +183,21 @@ def init_auth_db():
                 );
             """)
 
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    token TEXT NOT NULL UNIQUE,
+                    expires_at TIMESTAMP NOT NULL,
+                    used BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+            """)
+
+            cur.execute("""
+            CREATE INDEX idx_password_reset_token ON password_reset_tokens(token);
+            """)
+
 
         conn.commit()
 
@@ -191,23 +207,43 @@ def init_auth_db():
 # USERS
 # --------------------------------------------------
 
-def add_user(username: str, password: str) -> bool:
+def add_user(email: str, password_hash: str) -> Optional[int]:
     """
-    Returns False if user already exists.
+    Creates a user in auth.users
+    AND mirrors the user into app.users.
+
+    Returns user_id on success, None if user already exists.
     """
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
+                # 1️⃣ Insert into auth.users
                 cur.execute(
                     """
                     INSERT INTO users (email, password_hash)
                     VALUES (%s, %s)
+                    RETURNING id
                     """,
-                    (username, password),
+                    (email, password_hash),
                 )
-        return True
+
+                user_id = cur.fetchone()["id"]
+
+                cur.execute(
+                    """
+                    INSERT INTO app.users (id)
+                    VALUES (%s)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (user_id,),
+                )
+
+            conn.commit()
+            return user_id
+
     except psycopg2.errors.UniqueViolation:
-        return False
+        return None
+
 
 
 def verify_user(username: str, password: str) -> bool:
@@ -215,7 +251,7 @@ def verify_user(username: str, password: str) -> bool:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT password_hash
+                SELECT password_hash, is_active
                 FROM users
                 WHERE email = %s
                 """,
@@ -223,10 +259,11 @@ def verify_user(username: str, password: str) -> bool:
             )
             row = cur.fetchone()
 
-    if not row:
+    if not row or not row["is_active"]:
         return False
 
     return verify_password(password, row["password_hash"])
+
 
 
 def get_user_by_email(email: str):
@@ -596,3 +633,179 @@ def activate_subscription_for_user(conn, user_id: int, plan_id: int):
             """,
             (user_id, plan_id),
         )
+
+
+# =====================
+# Admin Operations
+# ====================
+
+# Admin Checker
+def is_admin_user(user_id: int) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT is_admin FROM users WHERE id = %s",
+                (user_id,),
+            )
+            row = cur.fetchone()
+    return bool(row and row["is_admin"])
+
+
+# List All Users
+def admin_list_users():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    u.id,
+                    u.email,
+                    u.is_active,
+                    u.is_admin,
+                    u.created_at,
+                    us.start_date,
+                    us.end_date,
+                    us.is_active AS subscription_active,
+                    sp.name AS plan_name
+                FROM users u
+                LEFT JOIN user_subscriptions us
+                    ON us.user_id = u.id AND us.is_active = TRUE
+                LEFT JOIN subscription_plans sp
+                    ON sp.id = us.plan_id
+                ORDER BY u.created_at DESC;
+            """)
+            return cur.fetchall()
+
+
+# Activate or Deactivate User
+def admin_set_user_active(user_id: int, is_active: bool):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE users
+                SET is_active = %s,
+                    disabled_at = CASE
+                        WHEN %s = FALSE THEN NOW()
+                        ELSE NULL
+                    END
+                WHERE id = %s;
+            """, (is_active, is_active, user_id))
+        conn.commit()
+
+
+# Extend User Subscription
+def admin_extend_subscription(user_id: int, days: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE user_subscriptions
+                SET end_date = end_date + (%s || ' days')::INTERVAL
+                WHERE user_id = %s
+                  AND is_active = TRUE;
+            """, (f"{days} days", user_id))
+        conn.commit()
+
+# View User Payment History
+def admin_get_user_payments(user_id: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    id,
+                    amount,
+                    currency,
+                    status,
+                    created_at
+                FROM payment_intents
+                WHERE user_id = %s
+                ORDER BY created_at DESC;
+            """, (user_id,))
+            return cur.fetchall()
+
+from app.services.email import send_password_reset_email
+import secrets
+def create_password_reset_token(email: str) -> None:
+    """
+    Always succeeds silently.
+    If user does not exist, nothing happens.
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM users WHERE email = %s AND is_active = TRUE",
+                (email,),
+            )
+            user = cur.fetchone()
+
+            if not user:
+                return  # silent exit (security)
+
+            token = secrets.token_urlsafe(48)
+            expires_at = datetime.utcnow() + timedelta(minutes=30)
+
+            cur.execute(
+                """
+                INSERT INTO password_reset_tokens (user_id, token, expires_at)
+                VALUES (%s, %s, %s)
+                """,
+                (user["id"], token, expires_at),
+            )
+
+    # Hook email sending
+    send_password_reset_email(email, token)
+
+def reset_password_with_token(token: str, new_password: str) -> bool:
+    from app.utils.security import hash_password
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT prt.id, prt.user_id
+                FROM password_reset_tokens prt
+                WHERE prt.token = %s
+                  AND prt.used = FALSE
+                  AND prt.expires_at > NOW()
+                """,
+                (token,),
+            )
+            row = cur.fetchone()
+
+            if not row:
+                return False
+
+            password_hash = hash_password(new_password)
+
+            cur.execute(
+                "UPDATE users SET password_hash = %s WHERE id = %s",
+                (password_hash, row["user_id"]),
+            )
+
+            cur.execute(
+                "UPDATE password_reset_tokens SET used = TRUE WHERE id = %s",
+                (row["id"],),
+            )
+
+    return True
+
+
+def set_user_admin_status(user_id: int, is_admin: bool) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE users
+                SET is_admin = %s
+                WHERE id = %s
+                """,
+                (is_admin, user_id),
+            )
+            return cur.rowcount > 0
+
+def get_admin_count() -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM users WHERE is_admin = TRUE"
+            )
+            return cur.fetchone()[0]

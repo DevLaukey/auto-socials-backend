@@ -85,48 +85,5 @@ def subscribe(
         "payment_url": "https://app.zeroid.cc/paylink/89e8d2c5-be5c-4953-8b2f-43cd0bafcd95"
     }
 
-@router.post("/payments/zeroid/webhook")
-async def zeroid_webhook(request: Request):
-    payload = await request.json()
 
-
-    reference = payload.get("reference")
-    status = payload.get("status")
-    amount = payload.get("amount")
-    currency = payload.get("currency")
-
-    if not reference or not status:
-        raise HTTPException(status_code=400, detail="Invalid payload")
-
-    with get_conn() as conn:
-        payment = get_payment_by_reference(conn, reference)
-
-        # ---- Idempotency guard ----
-        if not payment:
-            return {"ok": True}
-
-        if payment["status"] == "SUCCESS":
-            return {"ok": True}
-
-        # ---- Validate amount & currency ----
-        if (
-            payment["amount"] != amount
-            or payment["currency"] != currency
-        ):
-            mark_payment_failed(conn, reference, reason="Amount mismatch")
-            return {"ok": True}
-
-        # ---- Handle status ----
-        if status == "SUCCESS":
-            mark_payment_success(conn, reference)
-            activate_subscription_for_user(
-                conn,
-                user_id=payment["user_id"],
-                plan_id=payment["plan_id"],
-            )
-
-        elif status in ("FAILED", "CANCELLED"):
-            mark_payment_failed(conn, reference, reason=status)
-
-    return {"ok": True}
 
