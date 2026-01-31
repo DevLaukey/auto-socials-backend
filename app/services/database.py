@@ -67,6 +67,13 @@ def init_db():
         );
     """)
 
+    # Migration: drop legacy username/password columns if they exist
+    c.execute("""
+        ALTER TABLE users
+        DROP COLUMN IF EXISTS username,
+        DROP COLUMN IF EXISTS password;
+    """)
+
     # Groups table
     c.execute(""" 
         CREATE TABLE IF NOT EXISTS groups (
@@ -206,28 +213,7 @@ def init_db():
 
 # User operations
 
-def add_user(username, password):
-    conn = connect()
-    c = conn.cursor()
-    try:
-        c.execute("INSERT INTO users (username, password) VALUES (%s, %s)", (username, password))
-        conn.commit()
-        return True
-    except psycopg2.IntegrityError:
-        return False
-    finally:
-        conn.close()
-
-def get_user_id(username):
-    conn = connect()
-    c = conn.cursor()
-    c.execute("SELECT id FROM users WHERE username = %s", (username,))
-    row = c.fetchone()
-    conn.close()
-    return row[0] if row else None
-
-
-def sync_user_from_auth(auth_user_id: int, email: str):
+def sync_user_from_auth(auth_user_id: int):
     """
     Sync user from auth schema to app schema.
     Creates the user in app.users if they don't exist.
@@ -236,27 +222,24 @@ def sync_user_from_auth(auth_user_id: int, email: str):
     conn = connect()
     c = conn.cursor()
     try:
-        # Check if user already exists in app schema
         c.execute("SELECT id FROM users WHERE id = %s", (auth_user_id,))
         row = c.fetchone()
 
         if row:
             return row[0]
 
-        # Create user in app schema with matching id
         c.execute("""
-            INSERT INTO users (id, username, password)
-            VALUES (%s, %s, %s)
+            INSERT INTO users (id)
+            VALUES (%s)
             ON CONFLICT (id) DO NOTHING
             RETURNING id
-        """, (auth_user_id, email, 'synced_from_auth'))
+        """, (auth_user_id,))
         conn.commit()
 
         result = c.fetchone()
         if result:
             return result[0]
 
-        # If insert returned nothing (conflict), fetch the existing id
         c.execute("SELECT id FROM users WHERE id = %s", (auth_user_id,))
         row = c.fetchone()
         return row[0] if row else None

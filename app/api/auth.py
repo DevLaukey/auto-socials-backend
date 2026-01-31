@@ -116,7 +116,7 @@ def login(payload: LoginRequest, response: Response):
     # Sync user from auth schema to app schema
     auth_user = get_user_by_email(payload.email)
     if auth_user:
-        sync_user_from_auth(auth_user["id"], payload.email)
+        sync_user_from_auth(auth_user["id"])
 
     access_token = create_access_token(data={"sub": payload.email})
 
@@ -192,6 +192,7 @@ def me(current_user: dict = Depends(get_current_user)):
         "id": current_user["id"],
         "email": current_user["email"],
         "username": current_user["email"],
+        "is_admin": current_user.get("is_admin", False),
         "subscription": subscription_data,
     }
 
