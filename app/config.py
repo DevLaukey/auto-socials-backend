@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     API_BASE_URL: str = "http://localhost:8000"
 
     # ------------------
+    # CORS - comma-separated list of allowed origins
+    # ------------------
+    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000,https://localhost:3000,https://auto-socials-hxvi.vercel.app,https://auto-socials.vercel.app"
+
+    # ------------------
     # Security
     # ------------------
     SECRET_KEY: str = "CHANGE_ME_IMMEDIATELY"

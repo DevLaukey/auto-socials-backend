@@ -20,11 +20,13 @@ from app.services.auth_database import (
     add_user,
     verify_user,
     store_token_in_db,
-    get_valid_youtube_token, 
+    get_valid_youtube_token,
     get_conn,
     get_active_subscription,
-
+    get_user_by_email,
 )
+
+from app.services.database import sync_user_from_auth
 
 from app.utils.security import hash_password, create_access_token
 from app.config import settings
@@ -91,7 +93,7 @@ def register(payload: RegisterRequest):
 
 
 @router.post("/login", response_model=LoginResponse)
-def login(payload: LoginRequest, request: Request, response: Response):
+def login(payload: LoginRequest, response: Response):
     is_valid = verify_user(
         username=payload.email,
         password=payload.password,
@@ -103,24 +105,20 @@ def login(payload: LoginRequest, request: Request, response: Response):
             detail="Invalid email or password",
         )
 
+    # Sync user from auth schema to app schema
+    auth_user = get_user_by_email(payload.email)
+    if auth_user:
+        sync_user_from_auth(auth_user["id"], payload.email)
+
     access_token = create_access_token(data={"sub": payload.email})
 
-    # Detect if running behind HTTPS (Fly.io sets X-Forwarded-Proto)
-    forwarded_proto = request.headers.get("x-forwarded-proto", "")
-    is_https = forwarded_proto == "https" or request.url.scheme == "https"
-
-    # Always use secure cookies for cross-origin (non-localhost)
-    origin = request.headers.get("origin", "")
-    is_cross_origin = origin and "localhost" not in origin and "127.0.0.1" not in origin
-
-    use_secure_cookie = is_https or is_cross_origin
-
+    # Always use SameSite=None and Secure for cross-origin cookie support
     response.set_cookie(
         key="access_token",
         value=access_token,
         httponly=True,
-        samesite="none" if use_secure_cookie else "lax",
-        secure=use_secure_cookie,
+        samesite="none",
+        secure=True,
         max_age=60 * 60 * 24,
     )
 
@@ -128,20 +126,11 @@ def login(payload: LoginRequest, request: Request, response: Response):
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-def logout(request: Request, response: Response):
-    # Detect if running behind HTTPS
-    forwarded_proto = request.headers.get("x-forwarded-proto", "")
-    is_https = forwarded_proto == "https" or request.url.scheme == "https"
-
-    origin = request.headers.get("origin", "")
-    is_cross_origin = origin and "localhost" not in origin and "127.0.0.1" not in origin
-
-    use_secure_cookie = is_https or is_cross_origin
-
+def logout(response: Response):
     response.delete_cookie(
         key="access_token",
-        samesite="none" if use_secure_cookie else "lax",
-        secure=use_secure_cookie,
+        samesite="none",
+        secure=True,
     )
 
 

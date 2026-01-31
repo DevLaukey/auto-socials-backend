@@ -33,11 +33,12 @@ def create_app() -> FastAPI:
         version="1.0.0",
     )
 
-    # ✅ CORS - Allow all origins (required for frontend on different domains)
-    # Using allow_origin_regex to allow all origins while supporting credentials
+    # ✅ CORS - Parse origins from environment variable (comma-separated)
+    cors_origins = [origin.strip() for origin in settings.CORS_ORIGINS.split(",") if origin.strip()]
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origin_regex=r".*",
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

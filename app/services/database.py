@@ -228,6 +228,45 @@ def get_user_id(username):
     conn.close()
     return row[0] if row else None
 
+
+def sync_user_from_auth(auth_user_id: int, email: str):
+    """
+    Sync user from auth schema to app schema.
+    Creates the user in app.users if they don't exist.
+    Returns the app schema user_id.
+    """
+    conn = connect()
+    c = conn.cursor()
+    try:
+        # Check if user already exists in app schema
+        c.execute("SELECT id FROM users WHERE id = %s", (auth_user_id,))
+        row = c.fetchone()
+
+        if row:
+            return row[0]
+
+        # Create user in app schema with matching id
+        c.execute("""
+            INSERT INTO users (id, username, password)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (id) DO NOTHING
+            RETURNING id
+        """, (auth_user_id, email, 'synced_from_auth'))
+        conn.commit()
+
+        result = c.fetchone()
+        if result:
+            return result[0]
+
+        # If insert returned nothing (conflict), fetch the existing id
+        c.execute("SELECT id FROM users WHERE id = %s", (auth_user_id,))
+        row = c.fetchone()
+        return row[0] if row else None
+
+    finally:
+        conn.close()
+
+
 # Account operations
 def add_account(user_id, platform, account_username, password):
     conn = connect()
