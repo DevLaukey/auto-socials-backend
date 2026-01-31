@@ -62,7 +62,6 @@ def init_db():
     # Users table
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
             id INTEGER PRIMARY KEY,
             created_at TIMESTAMPTZ DEFAULT NOW()
         );

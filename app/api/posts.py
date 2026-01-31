@@ -91,7 +91,7 @@ def create_post(
 
     if payload.group_ids:
         cursor = db.cursor()
-        placeholders = ",".join("?" for _ in payload.group_ids)
+        placeholders = ",".join("%s" for _ in payload.group_ids)
 
         cursor.execute(
             f"""
@@ -99,7 +99,7 @@ def create_post(
             FROM group_accounts
             WHERE group_id IN ({placeholders})
             """,
-            payload.group_ids,
+            tuple(payload.group_ids),
         )
 
         final_account_ids.update(row[0] for row in cursor.fetchall())
@@ -216,7 +216,7 @@ def cancel_post(
 ):
     cursor = db.cursor()
 
-    cursor.execute("SELECT status FROM posts WHERE id = ?", (post_id,))
+    cursor.execute("SELECT status FROM posts WHERE id = %s", (post_id,))
     row = cursor.fetchone()
 
     if not row:
@@ -225,8 +225,8 @@ def cancel_post(
     cursor.execute(
         """
         UPDATE posts
-        SET status = ?, scheduled_time = NULL
-        WHERE id = ?
+        SET status = %s, scheduled_time = NULL
+        WHERE id = %s
         """,
         ("cancelled", post_id),
     )
@@ -247,15 +247,15 @@ def reschedule_post(
 ):
     cursor = db.cursor()
 
-    cursor.execute("SELECT id FROM posts WHERE id = ?", (post_id,))
+    cursor.execute("SELECT id FROM posts WHERE id = %s", (post_id,))
     if not cursor.fetchone():
         raise HTTPException(status_code=404, detail="Post not found")
 
     cursor.execute(
         """
         UPDATE posts
-        SET scheduled_time = ?, status = ?
-        WHERE id = ?
+        SET scheduled_time = %s, status = %s
+        WHERE id = %s
         """,
         (payload.scheduled_time.isoformat(), "Pending", post_id),
     )
@@ -269,7 +269,7 @@ def resolve_group_accounts(
     group_ids: List[int],
     db=Depends(get_db),
 ):
-    placeholders = ",".join("?" for _ in group_ids)
+    placeholders = ",".join("%s" for _ in group_ids)
 
     cursor = db.cursor()
     cursor.execute(
@@ -278,7 +278,7 @@ def resolve_group_accounts(
         FROM group_accounts
         WHERE group_id IN ({placeholders})
         """,
-        group_ids,
+        tuple(group_ids),
     )
 
     return {

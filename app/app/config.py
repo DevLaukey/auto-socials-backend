@@ -34,8 +34,7 @@ class Settings(BaseSettings):
     # ------------------
     # Database
     # ------------------
-    DATABASE_URL: str = "sqlite:///./app.db"
-    AUTH_DATABASE_URL: str = ""  # Set via environment variable: postgresql://user:pass@host:5432/db
+    DATABASE_URL: str = ""  # Set via DATABASE_URL environment variable (Fly.io Postgres)
 
 
 

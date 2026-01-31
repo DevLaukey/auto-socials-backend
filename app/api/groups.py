@@ -28,7 +28,7 @@ def list_groups(user=Depends(get_current_user), db=Depends(get_db)):
         """
         SELECT id, group_name
         FROM groups
-        WHERE user_id = ?
+        WHERE user_id = %s
         ORDER BY id DESC
         """,
         (user["id"],),
@@ -57,15 +57,17 @@ def create_group(
     cursor.execute(
         """
         INSERT INTO groups (group_name, user_id)
-        VALUES (?, ?)
+        VALUES (%s, %s)
+        RETURNING id
         """,
         (payload.group_name, user["id"]),
     )
 
+    row = cursor.fetchone()
     db.commit()
 
     return {
-        "id": cursor.lastrowid,
+        "id": row[0],
         "name": payload.group_name,
     }
 
@@ -84,7 +86,7 @@ def delete_group(
         """
         SELECT 1
         FROM groups
-        WHERE id = ? AND user_id = ?
+        WHERE id = %s AND user_id = %s
         """,
         (group_id, user["id"]),
     )
@@ -95,7 +97,7 @@ def delete_group(
     cursor.execute(
         """
         DELETE FROM groups
-        WHERE id = ? AND user_id = ?
+        WHERE id = %s AND user_id = %s
         """,
         (group_id, user["id"]),
     )
@@ -118,7 +120,7 @@ def group_accounts(
         """
         SELECT 1
         FROM groups
-        WHERE id = ? AND user_id = ?
+        WHERE id = %s AND user_id = %s
         """,
         (group_id, user["id"]),
     )
@@ -135,8 +137,8 @@ def group_accounts(
             a.account_username
         FROM accounts a
         JOIN group_accounts ga ON ga.account_id = a.id
-        WHERE ga.group_id = ?
-          AND a.user_id = ?
+        WHERE ga.group_id = %s
+          AND a.user_id = %s
         ORDER BY a.id DESC
         """,
         (group_id, user["id"]),
@@ -170,7 +172,7 @@ def add_account_to_group(
         """
         SELECT 1
         FROM groups
-        WHERE id = ? AND user_id = ?
+        WHERE id = %s AND user_id = %s
         """,
         (group_id, user["id"]),
     )
@@ -182,7 +184,7 @@ def add_account_to_group(
         """
         SELECT 1
         FROM accounts
-        WHERE id = ? AND user_id = ?
+        WHERE id = %s AND user_id = %s
         """,
         (account_id, user["id"]),
     )
@@ -191,8 +193,9 @@ def add_account_to_group(
 
     cursor.execute(
         """
-        INSERT OR IGNORE INTO group_accounts (group_id, account_id)
-        VALUES (?, ?)
+        INSERT INTO group_accounts (group_id, account_id)
+        VALUES (%s, %s)
+        ON CONFLICT (group_id, account_id) DO NOTHING
         """,
         (group_id, account_id),
     )
@@ -216,7 +219,7 @@ def remove_account_from_group(
         """
         SELECT 1
         FROM groups
-        WHERE id = ? AND user_id = ?
+        WHERE id = %s AND user_id = %s
         """,
         (group_id, user["id"]),
     )
@@ -226,11 +229,10 @@ def remove_account_from_group(
     cursor.execute(
         """
         DELETE FROM group_accounts
-        WHERE group_id = ? AND account_id = ?
+        WHERE group_id = %s AND account_id = %s
         """,
         (group_id, account_id),
     )
 
     db.commit()
     return {"success": True}
-

@@ -2,7 +2,6 @@ import psycopg2
 import psycopg2.extras
 import json
 import os
-import sqlite3
 from datetime import datetime, timedelta
 import threading
 from typing import Optional
@@ -89,6 +88,20 @@ def init_auth_db():
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
 
+            """)
+
+            # Migration: Add missing columns to users table if they don't exist
+            cur.execute("""
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+            """)
+            cur.execute("""
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE;
+            """)
+            cur.execute("""
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS disabled_at TIMESTAMPTZ;
             """)
 
             # YOUTUBE TOKENS
@@ -195,7 +208,7 @@ def init_auth_db():
             """)
 
             cur.execute("""
-            CREATE INDEX idx_password_reset_token ON password_reset_tokens(token);
+            CREATE INDEX IF NOT EXISTS idx_password_reset_token ON password_reset_tokens(token);
             """)
 
 

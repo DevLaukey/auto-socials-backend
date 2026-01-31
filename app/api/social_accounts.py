@@ -63,7 +63,7 @@ def connect_social_account(
             """
             SELECT 1
             FROM groups
-            WHERE id = ? AND user_id = ?
+            WHERE id = %s AND user_id = %s
             """,
             (payload.group_id, user_id),
         )
@@ -75,7 +75,7 @@ def connect_social_account(
                 detail="Group not found",
             )
 
-        add_account_to_group(account_id, payload.group_id)
+        add_account_to_group(payload.group_id, account_id)
         conn.close()
 
     return {
@@ -122,7 +122,7 @@ def add_account_group_link(
         """
         SELECT 1
         FROM accounts
-        WHERE id = ? AND user_id = ?
+        WHERE id = %s AND user_id = %s
         """,
         (account_id, user_id),
     )
@@ -138,7 +138,7 @@ def add_account_group_link(
         """
         SELECT 1
         FROM groups
-        WHERE id = ? AND user_id = ?
+        WHERE id = %s AND user_id = %s
         """,
         (group_id, user_id),
     )
@@ -149,7 +149,7 @@ def add_account_group_link(
             detail="Group not found",
         )
 
-    add_account_to_group(account_id, group_id)
+    add_account_to_group(group_id, account_id)
     conn.close()
     return {"success": True}
 
@@ -173,7 +173,7 @@ def remove_account_group_link(
         """
         SELECT 1
         FROM accounts
-        WHERE id = ? AND user_id = ?
+        WHERE id = %s AND user_id = %s
         """,
         (account_id, user_id),
     )
@@ -189,7 +189,7 @@ def remove_account_group_link(
         """
         SELECT 1
         FROM groups
-        WHERE id = ? AND user_id = ?
+        WHERE id = %s AND user_id = %s
         """,
         (group_id, user_id),
     )
@@ -200,7 +200,7 @@ def remove_account_group_link(
             detail="Group not found",
         )
 
-    remove_account_from_group(account_id, group_id)
+    remove_account_from_group(group_id, account_id)
     conn.close()
     return {"success": True}
 
