@@ -46,7 +46,7 @@ def list_groups(user=Depends(get_current_user), db=Depends(get_db)):
 
 
 
-@router.post("/")
+@router.post("/create")
 def create_group(
     payload: GroupCreate,
     user=Depends(get_current_user),
@@ -72,24 +72,59 @@ def create_group(
 
 
 @router.delete("/{group_id}")
-def delete_group(group_id: int, db=Depends(get_db)):
+def delete_group(
+    group_id: int,
+    user=Depends(get_current_user),
+    db=Depends(get_db),
+):
     cursor = db.cursor()
+
+    # Ensure group belongs to user
+    cursor.execute(
+        """
+        SELECT 1
+        FROM groups
+        WHERE id = ? AND user_id = ?
+        """,
+        (group_id, user["id"]),
+    )
+
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Group not found")
 
     cursor.execute(
         """
         DELETE FROM groups
-        WHERE id = ?
+        WHERE id = ? AND user_id = ?
         """,
-        (group_id,),
+        (group_id, user["id"]),
     )
 
     db.commit()
     return {"success": True}
 
 
+
 @router.get("/{group_id}/accounts")
-def group_accounts(group_id: int, db=Depends(get_db)):
+def group_accounts(
+    group_id: int,
+    user=Depends(get_current_user),
+    db=Depends(get_db),
+):
     cursor = db.cursor()
+
+    # Verify ownership of group
+    cursor.execute(
+        """
+        SELECT 1
+        FROM groups
+        WHERE id = ? AND user_id = ?
+        """,
+        (group_id, user["id"]),
+    )
+
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Group not found")
 
     cursor.execute(
         """
@@ -101,9 +136,10 @@ def group_accounts(group_id: int, db=Depends(get_db)):
         FROM accounts a
         JOIN group_accounts ga ON ga.account_id = a.id
         WHERE ga.group_id = ?
+          AND a.user_id = ?
         ORDER BY a.id DESC
         """,
-        (group_id,),
+        (group_id, user["id"]),
     )
 
     rows = cursor.fetchall()
@@ -119,9 +155,39 @@ def group_accounts(group_id: int, db=Depends(get_db)):
     ]
 
 
+
 @router.post("/{group_id}/accounts/{account_id}")
-def add_account_to_group(group_id: int, account_id: int, db=Depends(get_db)):
+def add_account_to_group(
+    group_id: int,
+    account_id: int,
+    user=Depends(get_current_user),
+    db=Depends(get_db),
+):
     cursor = db.cursor()
+
+    # Verify group ownership
+    cursor.execute(
+        """
+        SELECT 1
+        FROM groups
+        WHERE id = ? AND user_id = ?
+        """,
+        (group_id, user["id"]),
+    )
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    # Verify account ownership
+    cursor.execute(
+        """
+        SELECT 1
+        FROM accounts
+        WHERE id = ? AND user_id = ?
+        """,
+        (account_id, user["id"]),
+    )
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Account not found")
 
     cursor.execute(
         """
@@ -135,9 +201,27 @@ def add_account_to_group(group_id: int, account_id: int, db=Depends(get_db)):
     return {"success": True}
 
 
+
 @router.delete("/{group_id}/accounts/{account_id}")
-def remove_account_from_group(group_id: int, account_id: int, db=Depends(get_db)):
+def remove_account_from_group(
+    group_id: int,
+    account_id: int,
+    user=Depends(get_current_user),
+    db=Depends(get_db),
+):
     cursor = db.cursor()
+
+    # Verify group ownership
+    cursor.execute(
+        """
+        SELECT 1
+        FROM groups
+        WHERE id = ? AND user_id = ?
+        """,
+        (group_id, user["id"]),
+    )
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Group not found")
 
     cursor.execute(
         """
@@ -149,3 +233,4 @@ def remove_account_from_group(group_id: int, account_id: int, db=Depends(get_db)
 
     db.commit()
     return {"success": True}
+

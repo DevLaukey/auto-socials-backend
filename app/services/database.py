@@ -63,8 +63,8 @@ def init_db():
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL
+            id INTEGER PRIMARY KEY,
+            created_at TIMESTAMPTZ DEFAULT NOW()
         );
     """)
 
@@ -82,12 +82,26 @@ def init_db():
     c.execute("""
         CREATE TABLE IF NOT EXISTS proxies (
             id SERIAL PRIMARY KEY,
-            proxy_address TEXT NOT NULL UNIQUE,
+
+            user_id INTEGER NOT NULL,
+            proxy_address TEXT NOT NULL,
             proxy_type TEXT NOT NULL,
-            is_active BOOLEAN DEFAULT TRUE,
-            last_used TIMESTAMP WITH TIME ZONE,
-            fail_count INTEGER DEFAULT 0
-        )
+
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+
+            -- Health / diagnostics
+            last_used TIMESTAMPTZ,
+            fail_count INTEGER NOT NULL DEFAULT 0,
+
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+            CONSTRAINT uq_user_proxy UNIQUE (user_id, proxy_address),
+            CONSTRAINT fk_proxy_user
+                FOREIGN KEY (user_id)
+                REFERENCES auth.users(id)
+                ON DELETE CASCADE
+        );
+
     """)
 
     # Accounts table
@@ -204,21 +218,6 @@ def add_user(username, password):
         return False
     finally:
         conn.close()
-
-from app.utils.security import verify_password
-
-def verify_user(username, password):
-    conn = connect()
-    c = conn.cursor()
-    c.execute("SELECT password FROM users WHERE username = %s", (username,))
-    row = c.fetchone()
-    conn.close()
-
-    if not row:
-        return False
-
-    hashed_password = row[0]
-    return verify_password(password, hashed_password)
 
 def get_user_id(username):
     conn = connect()
@@ -707,13 +706,23 @@ def update_post_schedule_time(post_id, scheduled_time):
     conn.commit()
     conn.close()
 
-def get_groups():
+def get_groups(user_id: int):
     conn = connect()
     c = conn.cursor()
-    c.execute("SELECT id, group_name FROM groups")
-    rows = c.fetchall()
-    conn.close()
-    return rows
+    try:
+        c.execute(
+            """
+            SELECT id, group_name
+            FROM groups
+            WHERE user_id = %s
+            ORDER BY id DESC
+            """,
+            (user_id,),
+        )
+        return c.fetchall()
+    finally:
+        conn.close()
+
 
 def add_group(group_name):
     conn = connect()
@@ -987,111 +996,142 @@ def get_posts(user_id):
     conn.close()
     return rows
 
-def get_random_proxy():
+def get_random_proxy(user_id: int):
     conn = connect()
-    c = conn.cursor()
-    c.execute("""
-        SELECT id, proxy_address, proxy_type 
-        FROM proxies 
-        WHERE is_active = TRUE 
-        ORDER BY RANDOM() 
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, proxy_address, proxy_type
+        FROM proxies
+        WHERE is_active = TRUE
+          AND user_id = %s
+        ORDER BY RANDOM()
         LIMIT 1
-    """)
-    proxy = c.fetchone()
+        """,
+        (user_id,),
+    )
+    row = cur.fetchone()
+    cur.close()
     conn.close()
-    if proxy:
-        return {
-            'id': proxy[0],
-            'address': proxy[1],
-            'type': proxy[2]
-        }
-    return None
+    return row  # (id, address, type) or None
 
-def post_with_random_proxy(account_id, media_path, caption, post_id):
-    proxy = get_random_proxy()
+
+
+def post_with_random_proxy(user_id, account_id, media_path, caption, post_id):
+    proxy = get_random_proxy(user_id)
     if not proxy:
         raise Exception("No active proxies available")
-    
-    # Update posts_accounts with the proxy used
-    conn = connect()
-    c = conn.cursor()
-    c.execute("""
-        UPDATE posts_accounts 
-        SET proxy_id = %s 
-        WHERE account_id = %s AND post_id = %s
-    """, (proxy['id'], account_id, post_id))
-    conn.commit()
-    conn.close()
 
-# Proxy operations
-def add_proxy(proxy_address, proxy_type):
-    """Add a new proxy to the database"""
+    proxy_id, proxy_address, proxy_type = proxy
+
     conn = connect()
     c = conn.cursor()
     try:
-        c.execute("""
-            INSERT INTO proxies (proxy_address, proxy_type)
-            VALUES (%s, %s)
-        """, (proxy_address, proxy_type))
+        c.execute(
+            """
+            UPDATE posts_accounts
+            SET proxy_id = %s
+            WHERE account_id = %s
+              AND post_id = %s
+            """,
+            (proxy_id, account_id, post_id),
+        )
         conn.commit()
-        return True
-    except psycopg2.IntegrityError:
-        return False  # Proxy already exists
     finally:
         conn.close()
 
-def get_all_proxies():
-    """Get all proxies from the database"""
+    return {
+        "proxy_id": proxy_id,
+        "proxy_address": proxy_address,
+        "proxy_type": proxy_type,
+    }
+
+
+# Proxy operations
+def add_proxy(proxy_address: str, proxy_type: str, user_id: int):
     conn = connect()
-    c = conn.cursor()
-    c.execute("""
-        SELECT id, proxy_address, proxy_type, is_active 
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO proxies (proxy_address, proxy_type, user_id)
+            VALUES (%s, %s, %s)
+            """,
+            (proxy_address, proxy_type, user_id),
+        )
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        return False
+    finally:
+        cur.close()
+        conn.close()
+
+
+def get_all_proxies(user_id: int):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, proxy_address, proxy_type, is_active
         FROM proxies
-        ORDER BY id
-    """)
-    proxies = c.fetchall()
+        WHERE user_id = %s
+        ORDER BY id DESC
+        """,
+        (user_id,),
+    )
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
-    return proxies
+    return rows
 
-def update_proxy_status(proxy_id, is_active):
-    """Update the active status of a proxy"""
+
+def update_proxy_status(proxy_id: int, is_active: bool, user_id: int):
     conn = connect()
-    c = conn.cursor()
-    c.execute("""
-        UPDATE proxies 
-        SET is_active = %s 
-        WHERE id = %s
-    """, (is_active, proxy_id))
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE proxies
+        SET is_active = %s
+        WHERE id = %s AND user_id = %s
+        """,
+        (is_active, proxy_id, user_id),
+    )
     conn.commit()
+    cur.close()
     conn.close()
 
-def delete_proxy(proxy_id):
-    """Delete a proxy from the database"""
+
+def delete_proxy(proxy_id: int, user_id: int):
     conn = connect()
-    c = conn.cursor()
-    c.execute("DELETE FROM proxies WHERE id = %s", (proxy_id,))
+    cur = conn.cursor()
+    cur.execute(
+        """
+        DELETE FROM proxies
+        WHERE id = %s AND user_id = %s
+        """,
+        (proxy_id, user_id),
+    )
     conn.commit()
+    cur.close()
     conn.close()
 
-def get_proxy_by_id(proxy_id):
-    """Get a specific proxy by its ID"""
+def get_proxy_by_id(proxy_id: int, user_id: int):
     conn = connect()
-    c = conn.cursor()
-    c.execute("""
-        SELECT id, proxy_address, proxy_type, is_active 
-        FROM proxies 
-        WHERE id = %s
-    """, (proxy_id,))
-    proxy = c.fetchone()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, proxy_address, proxy_type, is_active
+        FROM proxies
+        WHERE id = %s AND user_id = %s
+        """,
+        (proxy_id, user_id),
+    )
+    row = cur.fetchone()
+    cur.close()
     conn.close()
-    if proxy:
-        return {
-            'id': proxy[0],
-            'address': proxy[1],
-            'type': proxy[2],
-            'is_active': bool(proxy[3])
-        }
-    return None
+    return row
 
 def set_user_timezone(user_id, timezone):
     """Set a user's preferred timezone"""
@@ -1151,3 +1191,4 @@ def reset_post_for_repost(post_id: int):
 
     finally:
         conn.close()
+

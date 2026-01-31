@@ -36,14 +36,14 @@ class SocialAccountResponse(BaseModel):
 
 # ---------------- Endpoints ----------------
 
-@router.post("/")
+@router.post("/connect")
 def connect_social_account(
     payload: SocialAccountCreate,
     current_user: dict = Depends(get_current_user),
 ):
     user_id = current_user["id"]
 
-    # 1️⃣ Create account (NO group here)
+    # 1️⃣ Create account
     account_id = add_account(
         user_id=user_id,
         platform=payload.platform,
@@ -51,9 +51,32 @@ def connect_social_account(
         password=payload.password,
     )
 
-    # 2️⃣ Optionally attach to group
+    # 2️⃣ Optionally attach to group (ownership enforced)
     if payload.group_id is not None:
+        from app.services.database import connect
+
+        conn = connect()
+        cursor = conn.cursor()
+
+        # Verify group belongs to user
+        cursor.execute(
+            """
+            SELECT 1
+            FROM groups
+            WHERE id = ? AND user_id = ?
+            """,
+            (payload.group_id, user_id),
+        )
+
+        if not cursor.fetchone():
+            conn.close()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Group not found",
+            )
+
         add_account_to_group(account_id, payload.group_id)
+        conn.close()
 
     return {
         "id": account_id,
@@ -62,6 +85,8 @@ def connect_social_account(
         "group_id": payload.group_id,
         "status": "connected",
     }
+
+
 
 
 @router.get("/", response_model=List[SocialAccountResponse])
@@ -86,8 +111,49 @@ def add_account_group_link(
     group_id: int,
     user=Depends(get_current_user),
 ):
+    user_id = user["id"]
+
+    from app.services.database import connect
+    conn = connect()
+    cursor = conn.cursor()
+
+    # Verify account ownership
+    cursor.execute(
+        """
+        SELECT 1
+        FROM accounts
+        WHERE id = ? AND user_id = ?
+        """,
+        (account_id, user_id),
+    )
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found",
+        )
+
+    # Verify group ownership
+    cursor.execute(
+        """
+        SELECT 1
+        FROM groups
+        WHERE id = ? AND user_id = ?
+        """,
+        (group_id, user_id),
+    )
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Group not found",
+        )
+
     add_account_to_group(account_id, group_id)
+    conn.close()
     return {"success": True}
+
+
 
 
 @router.delete("/{account_id}/groups/{group_id}")
@@ -96,8 +162,48 @@ def remove_account_group_link(
     group_id: int,
     user=Depends(get_current_user),
 ):
+    user_id = user["id"]
+
+    from app.services.database import connect
+    conn = connect()
+    cursor = conn.cursor()
+
+    # Verify account ownership
+    cursor.execute(
+        """
+        SELECT 1
+        FROM accounts
+        WHERE id = ? AND user_id = ?
+        """,
+        (account_id, user_id),
+    )
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found",
+        )
+
+    # Verify group ownership
+    cursor.execute(
+        """
+        SELECT 1
+        FROM groups
+        WHERE id = ? AND user_id = ?
+        """,
+        (group_id, user_id),
+    )
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Group not found",
+        )
+
     remove_account_from_group(account_id, group_id)
+    conn.close()
     return {"success": True}
+
 
 
 @router.delete("/{account_id}")
