@@ -17,6 +17,10 @@ class GroupCreate(BaseModel):
     group_name: str
 
 
+class GroupUpdate(BaseModel):
+    group_name: str
+
+
 # -------------------------
 # Routes
 # -------------------------
@@ -71,6 +75,36 @@ def create_group(
         "name": payload.group_name,
     }
 
+
+
+@router.patch("/{group_id}")
+def update_group(
+    group_id: int,
+    payload: GroupUpdate,
+    user=Depends(get_current_user),
+    db=Depends(get_db),
+):
+    cursor = db.cursor()
+
+    cursor.execute(
+        """
+        UPDATE groups
+        SET group_name = %s
+        WHERE id = %s AND user_id = %s
+        RETURNING id, group_name
+        """,
+        (payload.group_name, group_id, user["id"]),
+    )
+
+    row = cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    db.commit()
+    return {
+        "id": row[0],
+        "name": row[1],
+    }
 
 
 @router.delete("/{group_id}")
