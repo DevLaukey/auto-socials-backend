@@ -1,5 +1,9 @@
 from pathlib import Path
 from pydantic_settings import BaseSettings
+from typing import Optional
+import json
+import os
+import tempfile
 
 # backend/app/config.py
 
@@ -8,7 +12,6 @@ BACKEND_DIR = APP_DIR.parent  # backend/
 
 MEDIA_ROOT = BACKEND_DIR / "media"
 UPLOAD_DIR = MEDIA_ROOT / "uploads"
-
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -19,12 +22,20 @@ class Settings(BaseSettings):
     # ------------------
     APP_NAME: str = "Social Automation Backend"
     ENV: str = "development"
+
+    # MUST be overridden in Fly.io
     API_BASE_URL: str = "http://localhost:8000"
 
     # ------------------
-    # CORS - comma-separated list of allowed origins
+    # CORS
     # ------------------
-    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000,https://localhost:3000,https://auto-socials-hxvi.vercel.app,https://auto-socials.vercel.app"
+    CORS_ORIGINS: str = (
+        "http://localhost:3000,"
+        "http://127.0.0.1:3000,"
+        "https://localhost:3000,"
+        "https://auto-socials-hxvi.vercel.app,"
+        "https://auto-socials.vercel.app"
+    )
 
     # ------------------
     # Security
@@ -32,12 +43,9 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "CHANGE_ME_IMMEDIATELY"
 
     # ------------------
-    # Database (Fly.io sets DATABASE_URL automatically)
+    # Database
     # ------------------
     DATABASE_URL: str = ""
-
-
-
 
     # ------------------
     # Redis / Celery
@@ -53,9 +61,10 @@ class Settings(BaseSettings):
     # ------------------
     # 🔥 GOOGLE / YOUTUBE OAUTH
     # ------------------
-    # GOOGLE_CLIENT_SECRETS_FILE: Path = BACKEND_DIR / "client_secret.json"
     FRONTEND_BASE_URL: str = "http://localhost:3000"
-    GOOGLE_CLIENT_SECRETS_FILE: Path = APP_DIR / "client_secret.json"
+
+    # Stored in Fly.io secrets
+    GOOGLE_CLIENT_SECRET_JSON: Optional[str] = None
 
     class Config:
         env_file = ".env"
@@ -70,10 +79,36 @@ settings = Settings()
 settings.MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
 settings.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
+
 # ------------------
-# FAIL FAST if OAuth misconfigured
+# Google OAuth helper
 # ------------------
-# if not settings.GOOGLE_CLIENT_SECRETS_FILE.exists():
-#     raise RuntimeError(
-#         f"Missing Google OAuth config file: {settings.GOOGLE_CLIENT_SECRETS_FILE}"
-#     )
+def get_google_client_secrets_file() -> str:
+    """
+    Writes GOOGLE_CLIENT_SECRET_JSON to a temp file
+    and returns the file path.
+
+    Required because google-auth expects a file path.
+    """
+
+    if not settings.GOOGLE_CLIENT_SECRET_JSON:
+        raise RuntimeError(
+            "Missing GOOGLE_CLIENT_SECRET_JSON. "
+            "Set it using `fly secrets set`."
+        )
+
+    try:
+        json.loads(settings.GOOGLE_CLIENT_SECRET_JSON)
+    except json.JSONDecodeError:
+        raise RuntimeError("GOOGLE_CLIENT_SECRET_JSON is not valid JSON")
+
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".json",
+        delete=False,
+    )
+    tmp.write(settings.GOOGLE_CLIENT_SECRET_JSON)
+    tmp.flush()
+    tmp.close()
+
+    return tmp.name

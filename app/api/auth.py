@@ -29,7 +29,8 @@ from app.services.auth_database import (
 from app.services.database import sync_user_from_auth
 
 from app.utils.security import hash_password, create_access_token
-from app.config import settings
+from app.config import settings, get_google_client_secrets_file
+
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -37,7 +38,6 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # GOOGLE OAUTH CONFIG
 # -----------------------------
 
-GOOGLE_CLIENT_SECRETS_FILE = settings.GOOGLE_CLIENT_SECRETS_FILE
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.readonly",
@@ -45,7 +45,6 @@ GOOGLE_SCOPES = [
 
 REDIRECT_URI = f"{settings.API_BASE_URL}/auth/youtube/callback"
 FRONTEND_BASE_URL = settings.FRONTEND_BASE_URL
-
 # -----------------------------
 # Schemas
 # -----------------------------
@@ -206,7 +205,6 @@ def me(current_user: dict = Depends(get_current_user)):
 @router.get("/youtube/start/{account_id}")
 def youtube_auth_start(
     account_id: int,
-    request: Request,
     next: str = "/",
 ):
     """
@@ -221,7 +219,7 @@ def youtube_auth_start(
     state = urllib.parse.quote(json.dumps(state_payload))
 
     flow = Flow.from_client_secrets_file(
-        GOOGLE_CLIENT_SECRETS_FILE,
+        get_google_client_secrets_file(),
         scopes=GOOGLE_SCOPES,
         redirect_uri=REDIRECT_URI,
     )
@@ -233,8 +231,8 @@ def youtube_auth_start(
         state=state,
     )
 
-    # IMPORTANT: force 302
     return RedirectResponse(auth_url, status_code=302)
+
 
 
 @router.get("/youtube/callback")
@@ -247,7 +245,6 @@ def youtube_auth_callback(
     Stores tokens and redirects back to frontend.
     """
 
-    # ---- Decode and validate state safely ----
     try:
         state_data = json.loads(urllib.parse.unquote(state))
     except Exception:
@@ -256,7 +253,7 @@ def youtube_auth_callback(
     account_id = state_data["account_id"]
     redirect_path = state_data.get("redirect", "/")
 
-    # ---- GUARD: prevent replay / double-callback ----
+    # Prevent duplicate token exchange
     existing_token = get_valid_youtube_token(account_id)
     if existing_token:
         return RedirectResponse(
@@ -264,24 +261,22 @@ def youtube_auth_callback(
             status_code=302,
         )
 
-    # ---- Recreate flow EXACTLY as start() ----
     flow = Flow.from_client_secrets_file(
-        GOOGLE_CLIENT_SECRETS_FILE,
+        get_google_client_secrets_file(),
         scopes=GOOGLE_SCOPES,
         redirect_uri=REDIRECT_URI,
     )
 
-    # ---- Exchange code ONCE ----
     flow.fetch_token(code=code)
     creds: Credentials = flow.credentials
 
-    # ---- Persist token ----
     store_token_in_db(account_id, creds)
 
     return RedirectResponse(
         f"{FRONTEND_BASE_URL}{redirect_path}?youtube=connected",
         status_code=302,
     )
+
 
 
 @router.get("/youtube/status/{account_id}")
