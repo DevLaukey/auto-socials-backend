@@ -13,9 +13,6 @@ from app.api.subscriptions import Subscription
 
 from app.api.deps import get_current_user
 
-from app.services.database import get_db
-
-
 from app.services.auth_database import (
     add_user,
     verify_user,
@@ -25,8 +22,6 @@ from app.services.auth_database import (
     get_active_subscription,
     get_user_by_email,
 )
-
-from app.services.database import sync_user_from_auth
 
 from app.utils.security import hash_password, create_access_token
 from app.config import settings
@@ -112,11 +107,6 @@ def login(payload: LoginRequest, response: Response):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
-
-    # Sync user from auth schema to app schema
-    auth_user = get_user_by_email(payload.email)
-    if auth_user:
-        sync_user_from_auth(auth_user["id"])
 
     access_token = create_access_token(data={"sub": payload.email})
 

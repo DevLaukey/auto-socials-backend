@@ -1,4 +1,7 @@
 import logging
+import os
+from urllib.parse import urlparse, urlunparse
+
 from celery import Celery
 from celery.schedules import crontab
 
@@ -15,10 +18,17 @@ logger.info("[CELERY] Initializing Celery application")
 # Celery App
 # ============================
 
+_redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+# Broker uses db 0, backend uses db 1
+_parsed = urlparse(_redis_url)
+_broker_url = urlunparse(_parsed._replace(path="/0"))
+_backend_url = urlunparse(_parsed._replace(path="/1"))
+
 celery_app = Celery(
     "social_automation",
-        broker="redis://localhost:6380/0",
-        backend="redis://localhost:6380/1",
+        broker=_broker_url,
+        backend=_backend_url,
 )
 
 celery_app.conf.update(

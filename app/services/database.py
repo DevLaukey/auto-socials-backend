@@ -57,31 +57,63 @@ def init_db():
     """)
 
     # Set search_path so all tables are created in app schema
-    c.execute("SET search_path TO app, public;")
+    # Include auth schema for foreign key references
+    c.execute("SET search_path TO app, auth, public;")
 
-    # Users table
+    # ===========================================
+    # MIGRATION: Consolidate to single auth.users
+    # ===========================================
+
+    # Check if app.users table exists and migrate FKs to auth.users
     c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY,
-            created_at TIMESTAMPTZ DEFAULT NOW()
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_schema = 'app' AND table_name = 'users'
         );
     """)
+    app_users_exists = c.fetchone()[0]
 
-    # Migration: drop legacy username/password columns if they exist
-    c.execute("""
-        ALTER TABLE users
-        DROP COLUMN IF EXISTS username,
-        DROP COLUMN IF EXISTS password;
-    """)
+    if app_users_exists:
+        # Drop foreign key constraints that reference app.users
+        # Then drop the app.users table
+        c.execute("""
+            DO $$
+            DECLARE
+                r RECORD;
+            BEGIN
+                -- Drop all FK constraints referencing app.users
+                FOR r IN (
+                    SELECT tc.constraint_name, tc.table_name, tc.table_schema
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.constraint_column_usage ccu
+                        ON tc.constraint_name = ccu.constraint_name
+                    WHERE tc.constraint_type = 'FOREIGN KEY'
+                        AND ccu.table_schema = 'app'
+                        AND ccu.table_name = 'users'
+                ) LOOP
+                    EXECUTE format('ALTER TABLE %I.%I DROP CONSTRAINT IF EXISTS %I',
+                        r.table_schema, r.table_name, r.constraint_name);
+                END LOOP;
+            END $$;
+        """)
+
+        # Drop the app.users table
+        c.execute("DROP TABLE IF EXISTS app.users CASCADE;")
+        conn.commit()
 
     # Groups table
-    c.execute(""" 
+    c.execute("""
         CREATE TABLE IF NOT EXISTS groups (
             id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            group_name TEXT NOT NULL,
-            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            user_id INTEGER,
+            group_name TEXT NOT NULL
         )
+    """)
+
+    # Migration: Add user_id column if missing
+    c.execute("""
+        ALTER TABLE groups
+        ADD COLUMN IF NOT EXISTS user_id INTEGER;
     """)
 
     # Proxies table
@@ -89,7 +121,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS proxies (
             id SERIAL PRIMARY KEY,
 
-            user_id INTEGER NOT NULL,
+            user_id INTEGER,
             proxy_address TEXT NOT NULL,
             proxy_type TEXT NOT NULL,
 
@@ -99,29 +131,33 @@ def init_db():
             last_used TIMESTAMPTZ,
             fail_count INTEGER NOT NULL DEFAULT 0,
 
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-            CONSTRAINT uq_user_proxy UNIQUE (user_id, proxy_address),
-            CONSTRAINT fk_proxy_user
-                FOREIGN KEY (user_id)
-                REFERENCES auth.users(id)
-                ON DELETE CASCADE
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
+    """)
 
+    # Migration: Add user_id column if missing
+    c.execute("""
+        ALTER TABLE proxies
+        ADD COLUMN IF NOT EXISTS user_id INTEGER;
     """)
 
     # Accounts table
     c.execute("""
         CREATE TABLE IF NOT EXISTS accounts (
             id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL,
+            user_id INTEGER,
             platform TEXT NOT NULL,
             account_username TEXT NOT NULL,
             password TEXT NOT NULL,
             session_data TEXT,
-            status TEXT DEFAULT 'active',
-            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            status TEXT DEFAULT 'active'
         )
+    """)
+
+    # Migration: Add user_id column if missing
+    c.execute("""
+        ALTER TABLE accounts
+        ADD COLUMN IF NOT EXISTS user_id INTEGER;
     """)
 
     # Posts table
@@ -144,10 +180,15 @@ def init_db():
             location TEXT,
             disable_comments BOOLEAN DEFAULT FALSE,
             share_to_feed BOOLEAN DEFAULT TRUE,
-            user_id INTEGER NOT NULL,
-            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+            user_id INTEGER,
             FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
         )
+    """)
+
+    # Migration: Add user_id column if missing
+    c.execute("""
+        ALTER TABLE posts
+        ADD COLUMN IF NOT EXISTS user_id INTEGER;
     """)
 
     # Group ↔ Account mapping table
@@ -190,8 +231,7 @@ def init_db():
     c.execute("""
         CREATE TABLE IF NOT EXISTS user_timezones (
             user_id INTEGER PRIMARY KEY,
-            timezone TEXT NOT NULL DEFAULT 'UTC',
-            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            timezone TEXT NOT NULL DEFAULT 'UTC'
         )
     """)
     c.execute("""
@@ -210,43 +250,6 @@ def init_db():
 
     conn.commit()
     conn.close()
-
-# User operations
-
-def sync_user_from_auth(auth_user_id: int):
-    """
-    Sync user from auth schema to app schema.
-    Creates the user in app.users if they don't exist.
-    Returns the app schema user_id.
-    """
-    conn = connect()
-    c = conn.cursor()
-    try:
-        c.execute("SELECT id FROM users WHERE id = %s", (auth_user_id,))
-        row = c.fetchone()
-
-        if row:
-            return row[0]
-
-        c.execute("""
-            INSERT INTO users (id)
-            VALUES (%s)
-            ON CONFLICT (id) DO NOTHING
-            RETURNING id
-        """, (auth_user_id,))
-        conn.commit()
-
-        result = c.fetchone()
-        if result:
-            return result[0]
-
-        c.execute("SELECT id FROM users WHERE id = %s", (auth_user_id,))
-        row = c.fetchone()
-        return row[0] if row else None
-
-    finally:
-        conn.close()
-
 
 # Account operations
 def add_account(user_id, platform, account_username, password):

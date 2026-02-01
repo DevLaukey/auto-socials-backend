@@ -222,15 +222,12 @@ def init_auth_db():
 
 def add_user(email: str, password_hash: str) -> Optional[int]:
     """
-    Creates a user in auth.users
-    AND mirrors the user into app.users.
-
+    Creates a user in auth.users.
     Returns user_id on success, None if user already exists.
     """
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
-                # 1️⃣ Insert into auth.users
                 cur.execute(
                     """
                     INSERT INTO users (email, password_hash)
@@ -239,18 +236,7 @@ def add_user(email: str, password_hash: str) -> Optional[int]:
                     """,
                     (email, password_hash),
                 )
-
                 user_id = cur.fetchone()["id"]
-
-                cur.execute(
-                    """
-                    INSERT INTO app.users (id)
-                    VALUES (%s)
-                    ON CONFLICT DO NOTHING
-                    """,
-                    (user_id,),
-                )
-
             conn.commit()
             return user_id
 
@@ -819,6 +805,6 @@ def get_admin_count() -> int:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(*) FROM users WHERE is_admin = TRUE"
+                "SELECT COUNT(*) AS cnt FROM users WHERE is_admin = TRUE"
             )
-            return cur.fetchone()[0]
+            return cur.fetchone()["cnt"]

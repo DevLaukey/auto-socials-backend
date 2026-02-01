@@ -22,15 +22,33 @@ def run_migrations():
 
             # Import here to catch connection errors
             from app.services.database import init_db
-            from app.services.auth_database import init_auth_db
+            from app.services.auth_database import init_auth_db, add_user, get_user_by_email, set_user_admin_status
+            from app.utils.security import hash_password
+
+            # Auth schema MUST be created first because app schema
+            # tables may reference auth.users via foreign keys.
+            logger.info("Initializing auth database...")
+            init_auth_db()
+            logger.info("Auth database initialized.")
 
             logger.info("Initializing main database...")
             init_db()
             logger.info("Main database initialized.")
 
-            logger.info("Initializing auth database...")
-            init_auth_db()
-            logger.info("Auth database initialized.")
+            # Create default admin user
+            logger.info("Creating default admin user...")
+            admin_email = "admin@autosocials.com"
+            admin_password = "Admin@2026!"
+
+            existing = get_user_by_email(admin_email)
+            if existing:
+                set_user_admin_status(existing["id"], True)
+                logger.info(f"Admin user already exists (ID: {existing['id']})")
+            else:
+                user_id = add_user(admin_email, hash_password(admin_password))
+                if user_id:
+                    set_user_admin_status(user_id, True)
+                    logger.info(f"Created admin user (ID: {user_id})")
 
             logger.info("All migrations completed successfully!")
             return True
