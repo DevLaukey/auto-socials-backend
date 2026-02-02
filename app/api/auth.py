@@ -193,7 +193,7 @@ def me(current_user: dict = Depends(get_current_user)):
 # =====================================================
 
 def get_google_flow():
-        client_config = json.loads(settings.GOOGLE_CLIENT_SECRET_JSON)
+        client_config = json.loads(settings.GOOGLE_CLIENT_SECRETS_FILE.read_text())
 
         return Flow.from_client_config(
             client_config,

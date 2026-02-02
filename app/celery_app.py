@@ -20,10 +20,10 @@ logger.info("[CELERY] Initializing Celery application")
 
 _redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-# Broker uses db 0, backend uses db 1
+# Both broker and backend use db 0 (many managed Redis services only support db 0)
 _parsed = urlparse(_redis_url)
 _broker_url = urlunparse(_parsed._replace(path="/0"))
-_backend_url = urlunparse(_parsed._replace(path="/1"))
+_backend_url = urlunparse(_parsed._replace(path="/0"))
 
 celery_app = Celery(
     "social_automation",

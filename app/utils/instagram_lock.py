@@ -1,3 +1,4 @@
+import os
 import time
 import redis
 import logging
@@ -5,13 +6,9 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
-# Use a separate Redis DB from Celery if possible
-redis_client = redis.Redis(
-    host="localhost",
-    port=6379,
-    db=2,
-    decode_responses=True,
-)
+# Use REDIS_URL from environment (db 0 for managed Redis compatibility)
+_redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+redis_client = redis.from_url(_redis_url, decode_responses=True)
 
 
 class InstagramAccountLock:
