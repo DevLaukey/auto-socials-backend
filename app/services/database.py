@@ -1177,3 +1177,54 @@ def reset_post_for_repost(post_id: int):
     finally:
         conn.close()
 
+
+def get_all_youtube_accounts_with_tokens():
+    """
+    Returns all YouTube accounts with their OAuth tokens.
+    """
+    conn = connect()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            a.id AS account_id,
+            t.access_token,
+            t.refresh_token,
+            t.expires_at
+        FROM accounts a
+        JOIN tokens t ON t.account_id = a.id
+        WHERE LOWER(a.platform) = 'youtube'
+    """)
+
+    rows = cur.fetchall()
+    conn.close()
+
+    return [
+        {
+            "account_id": row[0],
+            "access_token": row[1],
+            "refresh_token": row[2],
+            "expires_at": row[3],
+        }
+        for row in rows
+    ]
+
+
+def update_youtube_tokens(account_id: int, access_token: str, expires_at: int):
+    """
+    Update OAuth tokens for a YouTube account.
+    expires_at is epoch seconds.
+    """
+    conn = connect()
+    cur = conn.cursor()
+
+    cur.execute("""
+        UPDATE tokens
+        SET
+            access_token = %s,
+            expires_at = %s
+        WHERE account_id = %s
+    """, (access_token, expires_at, account_id))
+
+    conn.commit()
+    conn.close()
