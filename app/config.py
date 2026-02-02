@@ -64,16 +64,17 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+import os
+import json
+
+# ---- Write Google OAuth secret file from ENV (Fly-safe) ----
+if "GOOGLE_CLIENT_SECRET_JSON" in os.environ:
+    secret_path = settings.GOOGLE_CLIENT_SECRETS_FILE
+    secret_path.write_text(os.environ["GOOGLE_CLIENT_SECRET_JSON"])
+
 # ------------------
 # Ensure dirs exist
 # ------------------
 settings.MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
 settings.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-# ------------------
-# FAIL FAST if OAuth misconfigured
-# ------------------
-# if not settings.GOOGLE_CLIENT_SECRETS_FILE.exists():
-#     raise RuntimeError(
-#         f"Missing Google OAuth config file: {settings.GOOGLE_CLIENT_SECRETS_FILE}"
-#     )
