@@ -32,7 +32,6 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # GOOGLE OAUTH CONFIG
 # -----------------------------
 
-GOOGLE_CLIENT_SECRETS_FILE = settings.GOOGLE_CLIENT_SECRETS_FILE
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.readonly",
@@ -193,6 +192,15 @@ def me(current_user: dict = Depends(get_current_user)):
 # YOUTUBE OAUTH
 # =====================================================
 
+def get_google_flow():
+        client_config = json.loads(settings.GOOGLE_CLIENT_SECRET_JSON)
+
+        return Flow.from_client_config(
+            client_config,
+            scopes=GOOGLE_SCOPES,
+            redirect_uri=REDIRECT_URI,
+        )
+
 @router.get("/youtube/start/{account_id}")
 def youtube_auth_start(
     account_id: int,
@@ -210,11 +218,9 @@ def youtube_auth_start(
 
     state = urllib.parse.quote(json.dumps(state_payload))
 
-    flow = Flow.from_client_secrets_file(
-        GOOGLE_CLIENT_SECRETS_FILE,
-        scopes=GOOGLE_SCOPES,
-        redirect_uri=REDIRECT_URI,
-    )
+    
+    
+    flow = get_google_flow()
 
     auth_url, _ = flow.authorization_url(
         access_type="offline",
@@ -255,11 +261,7 @@ def youtube_auth_callback(
         )
 
     # ---- Recreate flow EXACTLY as start() ----
-    flow = Flow.from_client_secrets_file(
-        GOOGLE_CLIENT_SECRETS_FILE,
-        scopes=GOOGLE_SCOPES,
-        redirect_uri=REDIRECT_URI,
-    )
+    flow = get_google_flow()
 
     # ---- Exchange code ONCE ----
     flow.fetch_token(code=code)
