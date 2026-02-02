@@ -5,6 +5,8 @@ from datetime import datetime, timezone, timedelta
 from app.celery_app import celery_app
 from app.workers.post_executor import execute_post
 from app.services.database import get_post_details_by_post_id
+from app.services.youtube_token_service import refresh_all_youtube_tokens
+
 
 
 # ============================
@@ -79,6 +81,7 @@ def execute_scheduled_post(self, post_id: int):
 # ============================
 
 _next_refresh_at = None
+
 
 
 @celery_app.task(bind=True, name="refresh_youtube_tokens_task")
