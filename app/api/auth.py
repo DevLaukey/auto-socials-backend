@@ -71,7 +71,7 @@ class PasswordResetRequest(BaseModel):
 
 class PasswordResetConfirm(BaseModel):
     token: str
-    new_password: str
+    password: str
 
 # -----------------------------
 # Auth routes
@@ -294,36 +294,83 @@ def youtube_auth_status(
     }
 
 
-from app.services.auth_database import create_password_reset_token
+from app.services.auth_database import create_password_reset_token, reset_password_with_token
+from fastapi.responses import JSONResponse
 
 
 @router.post("/password-reset/request")
 def request_password_reset(payload: PasswordResetRequest):
     """
-    Returns success on success.
+    Request a password reset email.
+    Always returns success to prevent email enumeration.
     """
+    try:
+        create_password_reset_token(payload.email)
+    except Exception as e:
+        # Log the error but don't expose it (security)
+        print(f"[AUTH] Password reset request error: {e}")
 
-    create_password_reset_token(payload.email)
-
-    return {
-        "message": "If an account exists for this email, a reset link has been sent."
-    }
-
-
-from app.services.auth_database import reset_password_with_token
+    return JSONResponse(
+        status_code=200,
+        content={
+            "success": True,
+            "message": "If an account exists for this email, a reset link has been sent."
+        }
+    )
 
 
 @router.post("/password-reset/confirm")
 def confirm_password_reset(payload: PasswordResetConfirm):
-    success = reset_password_with_token(
-        token=payload.token,
-        new_password=payload.new_password,
-    )
-
-    if not success:
-        raise HTTPException(
+    """
+    Confirm password reset with token and new password.
+    """
+    if not payload.token or not payload.password:
+        return JSONResponse(
             status_code=400,
-            detail="Invalid or expired reset token",
+            content={
+                "success": False,
+                "message": "Token and password are required."
+            }
         )
 
-    return {"message": "Password reset successful"}
+    if len(payload.password) < 6:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "message": "Password must be at least 6 characters."
+            }
+        )
+
+    try:
+        success = reset_password_with_token(
+            token=payload.token,
+            new_password=payload.password,
+        )
+
+        if not success:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "message": "Invalid or expired reset token."
+                }
+            )
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "message": "Password reset successful."
+            }
+        )
+
+    except Exception as e:
+        print(f"[AUTH] Password reset confirm error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": "An error occurred. Please try again."
+            }
+        )

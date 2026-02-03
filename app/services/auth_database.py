@@ -741,11 +741,15 @@ def admin_get_user_payments(user_id: int):
 
 from app.services.email import send_password_reset_email
 import secrets
-def create_password_reset_token(email: str) -> None:
+
+
+def create_password_reset_token(email: str) -> bool:
     """
-    Always succeeds silently.
-    If user does not exist, nothing happens.
+    Create a password reset token and send email.
+    Returns True if token was created (email may or may not have been sent).
+    Returns False if user does not exist (silent for security).
     """
+    token = None
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -756,7 +760,7 @@ def create_password_reset_token(email: str) -> None:
             user = cur.fetchone()
 
             if not user:
-                return  # silent exit (security)
+                return False  # silent exit (security)
 
             token = secrets.token_urlsafe(48)
             expires_at = datetime.utcnow() + timedelta(minutes=30)
@@ -768,9 +772,13 @@ def create_password_reset_token(email: str) -> None:
                 """,
                 (user["id"], token, expires_at),
             )
+        conn.commit()
 
-    # Hook email sending
-    send_password_reset_email(email, token)
+    # Send email (non-blocking, logs errors internally)
+    if token:
+        send_password_reset_email(email, token)
+
+    return True
 
 def reset_password_with_token(token: str, new_password: str) -> bool:
     from app.utils.security import hash_password
