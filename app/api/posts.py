@@ -3,6 +3,13 @@ Endpoints for creating and scheduling posts.
 
 This layer NEVER posts content directly.
 It only stores intent and schedules background execution via Celery.
+
+PAYMENT FLOW:
+1. User calls POST /posts/initiate-payment with post data
+2. Backend stores post data and returns ZeroID payment URL
+3. User completes payment on ZeroID
+4. ZeroID webhook confirms payment
+5. Post is automatically created and scheduled
 """
 
 from fastapi import APIRouter, HTTPException, Depends, status
@@ -18,8 +25,17 @@ from app.services.database import (
     get_db,
     reset_post_for_repost
 )
+from app.services.auth_database import (
+    get_conn as get_auth_conn,
+    create_post_payment_intent,
+    get_post_payment_status,
+    get_user_post_payments,
+)
 from app.api.deps import get_current_user
 from app.workers.post_tasks import execute_scheduled_post
+
+# ZeroID payment URL for post payments
+ZEROID_POST_PAYMENT_URL = "https://app.zeroid.cc/paylink/89e8d2c5-be5c-4953-8b2f-43cd0bafcd95"
 
 
 router = APIRouter(prefix="/posts", tags=["posts"])
@@ -62,9 +78,157 @@ class PostResponse(BaseModel):
     scheduled_time: Optional[datetime]
 
 
+class PaymentInitiationResponse(BaseModel):
+    payment_id: str
+    payment_url: str
+    message: str
+
+
 # ======================
 # Routes
 # ======================
+
+@router.post("/initiate-payment", response_model=PaymentInitiationResponse)
+def initiate_post_payment(
+    payload: PostCreate,
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """
+    Initiate payment for creating a post.
+
+    This endpoint:
+    1. Validates the post data
+    2. Stores the post data temporarily
+    3. Returns the ZeroID payment URL
+
+    After payment is confirmed via webhook, the post will be automatically created.
+    """
+
+    # Normalize scheduled_time to UTC
+    scheduled_time = payload.scheduled_time
+    if scheduled_time:
+        if scheduled_time.tzinfo is None:
+            scheduled_time = scheduled_time.replace(tzinfo=timezone.utc)
+        else:
+            scheduled_time = scheduled_time.astimezone(timezone.utc)
+
+    # Resolve accounts from groups (validation only)
+    final_account_ids = set(payload.account_ids or [])
+
+    if payload.group_ids:
+        cursor = db.cursor()
+        placeholders = ",".join("%s" for _ in payload.group_ids)
+
+        cursor.execute(
+            f"""
+            SELECT DISTINCT account_id
+            FROM group_accounts
+            WHERE group_id IN ({placeholders})
+            """,
+            tuple(payload.group_ids),
+        )
+
+        final_account_ids.update(row[0] for row in cursor.fetchall())
+
+    final_account_ids = list(final_account_ids)
+
+    if not final_account_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="No accounts resolved for this post",
+        )
+
+    # Store post data for later creation
+    post_data = {
+        "account_ids": final_account_ids,
+        "media_file": payload.media_file,
+        "title": payload.title,
+        "description": payload.description,
+        "hashtags": payload.hashtags,
+        "tags": payload.tags,
+        "privacy_status": payload.privacy_status,
+        "post_type": payload.post_type,
+        "cover_image": payload.cover_image,
+        "audio_name": payload.audio_name,
+        "location": payload.location,
+        "disable_comments": payload.disable_comments,
+        "share_to_feed": payload.share_to_feed,
+        "scheduled_time": scheduled_time.isoformat() if scheduled_time else None,
+    }
+
+    # Create payment intent with post data
+    with get_auth_conn() as auth_conn:
+        payment_id = create_post_payment_intent(
+            auth_conn,
+            user_id=current_user["id"],
+            post_data=post_data,
+            amount=100,  # KES - adjust as needed
+        )
+
+    return PaymentInitiationResponse(
+        payment_id=str(payment_id),
+        payment_url=f"{ZEROID_POST_PAYMENT_URL}?reference={payment_id}",
+        message="Complete payment to create your post",
+    )
+
+
+@router.get("/payment-status/{payment_id}")
+def check_payment_status(
+    payment_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Check if a post payment has been completed.
+
+    Returns:
+    - status: 'pending', 'paid', or 'failed'
+    - is_paid: boolean for easy checking
+    """
+    payment = get_post_payment_status(payment_id)
+
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+
+    # Verify user owns this payment
+    if payment["user_id"] != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    return {
+        "payment_id": str(payment["id"]),
+        "status": payment["status"],
+        "is_paid": payment["status"] == "paid",
+        "created_at": payment["created_at"],
+        "updated_at": payment["updated_at"],
+    }
+
+
+@router.get("/my-payments")
+def list_my_post_payments(
+    status_filter: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    List all post payment intents for the current user.
+
+    Query params:
+    - status: Filter by 'pending', 'paid', or 'failed' (optional)
+    """
+    payments = get_user_post_payments(current_user["id"], status_filter)
+
+    return [
+        {
+            "payment_id": str(p["id"]),
+            "status": p["status"],
+            "is_paid": p["status"] == "paid",
+            "amount": p["amount"],
+            "currency": p["currency"],
+            "created_at": p["created_at"],
+            "updated_at": p["updated_at"],
+        }
+        for p in payments
+    ]
+
 
 @router.post("/", response_model=PostResponse, status_code=status.HTTP_201_CREATED)
 def create_post(

@@ -211,6 +211,25 @@ def init_auth_db():
             CREATE INDEX IF NOT EXISTS idx_password_reset_token ON password_reset_tokens(token);
             """)
 
+            # POST PAYMENT INTENTS (pay-per-post)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS post_payment_intents (
+                    id UUID PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    post_data JSONB NOT NULL,
+                    amount INTEGER NOT NULL DEFAULT 100,
+                    currency TEXT DEFAULT 'KES',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    zeroid_reference TEXT UNIQUE,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                );
+            """)
+
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_post_payment_status
+                ON post_payment_intents(status);
+            """)
 
         conn.commit()
 
@@ -808,3 +827,129 @@ def get_admin_count() -> int:
                 "SELECT COUNT(*) AS cnt FROM users WHERE is_admin = TRUE"
             )
             return cur.fetchone()["cnt"]
+
+
+# --------------------------------------------------
+# POST PAYMENT INTENTS (Pay-per-post)
+# --------------------------------------------------
+
+def create_post_payment_intent(conn, user_id: int, post_data: dict, amount: int = 100):
+    """
+    Create a pending post payment intent.
+    Returns the payment_id (UUID) to use as reference.
+    """
+    payment_id = uuid.uuid4()
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO post_payment_intents (
+                id, user_id, post_data, amount, status, zeroid_reference
+            )
+            VALUES (%s, %s, %s, %s, 'pending', %s)
+            RETURNING id
+        """, (str(payment_id), user_id, json.dumps(post_data), amount, str(payment_id)))
+
+    conn.commit()
+    return payment_id
+
+
+def get_pending_post_payment(conn, reference: str):
+    """
+    Get a pending post payment by zeroid reference.
+    Returns the post_data and user_id if found and pending.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT id, user_id, post_data, status
+            FROM post_payment_intents
+            WHERE zeroid_reference = %s
+        """, (reference,))
+        return cur.fetchone()
+
+
+def mark_post_payment_paid(conn, zeroid_reference: str):
+    """
+    Idempotent post payment confirmation.
+    Returns the row (user_id, post_data) only on first successful update.
+    """
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            UPDATE post_payment_intents
+            SET status = 'paid', updated_at = NOW()
+            WHERE zeroid_reference = %s
+              AND status = 'pending'
+            RETURNING user_id, post_data;
+        """, (zeroid_reference,))
+        row = cur.fetchone()
+        conn.commit()
+        return row
+
+
+def mark_post_payment_failed(conn, zeroid_reference: str, reason: str = None):
+    """
+    Mark a post payment as failed.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE post_payment_intents
+            SET status = 'failed', updated_at = NOW()
+            WHERE zeroid_reference = %s
+              AND status = 'pending'
+        """, (zeroid_reference,))
+    conn.commit()
+
+
+def get_post_payment_status(payment_id: str):
+    """
+    Get the status of a post payment by its ID.
+    Returns dict with status info or None if not found.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    id,
+                    user_id,
+                    status,
+                    created_at,
+                    updated_at
+                FROM post_payment_intents
+                WHERE id = %s
+            """, (payment_id,))
+            return cur.fetchone()
+
+
+def get_user_post_payments(user_id: int, status_filter: str = None):
+    """
+    Get all post payment intents for a user.
+    Optionally filter by status ('pending', 'paid', 'failed').
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if status_filter:
+                cur.execute("""
+                    SELECT
+                        id,
+                        status,
+                        amount,
+                        currency,
+                        created_at,
+                        updated_at
+                    FROM post_payment_intents
+                    WHERE user_id = %s AND status = %s
+                    ORDER BY created_at DESC
+                """, (user_id, status_filter))
+            else:
+                cur.execute("""
+                    SELECT
+                        id,
+                        status,
+                        amount,
+                        currency,
+                        created_at,
+                        updated_at
+                    FROM post_payment_intents
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC
+                """, (user_id,))
+            return cur.fetchall()
