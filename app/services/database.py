@@ -160,6 +160,50 @@ def init_db():
         ADD COLUMN IF NOT EXISTS user_id INTEGER;
     """)
 
+    # ===========================================
+    # AI CLIP GENERATION TABLES
+    # ===========================================
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS clip_jobs (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            source_url TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            progress INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS clips (
+            id SERIAL PRIMARY KEY,
+            clip_job_id INTEGER NOT NULL,
+            file_path TEXT NOT NULL,
+            duration INTEGER,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            FOREIGN KEY (clip_job_id)
+                REFERENCES clip_jobs(id)
+                ON DELETE CASCADE
+        );
+    """)
+
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_clip_jobs_user
+        ON clip_jobs (user_id);
+    """)
+
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_clip_jobs_status
+        ON clip_jobs (status);
+    """)
+
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_clips_job
+        ON clips (clip_job_id);
+    """)
+
     # Posts table
     c.execute("""
         CREATE TABLE IF NOT EXISTS posts (
@@ -1177,3 +1221,190 @@ def reset_post_for_repost(post_id: int):
     finally:
         conn.close()
 
+def get_all_youtube_accounts_with_tokens():
+    """
+    Returns all YouTube accounts with their OAuth tokens.
+    """
+    conn = connect()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            a.id AS account_id,
+            t.access_token,
+            t.refresh_token,
+            t.expires_at
+        FROM accounts a
+        JOIN tokens t ON t.account_id = a.id
+        WHERE LOWER(a.platform) = 'youtube'
+    """)
+
+    rows = cur.fetchall()
+    conn.close()
+
+    return [
+        {
+            "account_id": row[0],
+            "access_token": row[1],
+            "refresh_token": row[2],
+            "expires_at": row[3],
+        }
+        for row in rows
+    ]
+
+
+def update_youtube_tokens(account_id: int, access_token: str, expires_at: int):
+    """
+    Update OAuth tokens for a YouTube account.
+    expires_at is epoch seconds.
+    """
+    conn = connect()
+    cur = conn.cursor()
+
+    cur.execute("""
+        UPDATE tokens
+        SET
+            access_token = %s,
+            expires_at = %s
+        WHERE account_id = %s
+    """, (access_token, expires_at, account_id))
+
+    conn.commit()
+    conn.close()
+
+
+def create_clip_job(user_id: int, source_url: str) -> int:
+    conn = connect()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            INSERT INTO clip_jobs (user_id, source_url, status, progress)
+            VALUES (%s, %s, 'pending', 0)
+            RETURNING id;
+        """, (user_id, source_url))
+
+        job_id = c.fetchone()[0]
+        conn.commit()
+        return job_id
+    finally:
+        conn.close()
+
+
+def update_clip_job_status(
+    job_id: int,
+    status: str,
+    progress: int | None = None,
+    error: str | None = None,
+):
+    conn = connect()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            UPDATE clip_jobs
+            SET
+                status = %s,
+                progress = COALESCE(%s, progress),
+                error = %s
+            WHERE id = %s;
+        """, (status, progress, error, job_id))
+
+        conn.commit()
+    finally:
+        conn.close()
+
+def mark_clip_job_failed(job_id: int, error: str):
+    update_clip_job_status(
+        job_id=job_id,
+        status="failed",
+        progress=0,
+        error=error[:1000],
+    )
+
+def get_clip_job(job_id: int):
+    conn = connect()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            SELECT
+                id,
+                user_id,
+                source_url,
+                status,
+                progress,
+                error,
+                created_at
+            FROM clip_jobs
+            WHERE id = %s;
+        """, (job_id,))
+
+        row = c.fetchone()
+        if not row:
+            return None
+
+        return {
+            "id": row[0],
+            "user_id": row[1],
+            "source_url": row[2],
+            "status": row[3],
+            "progress": row[4],
+            "error": row[5],
+            "created_at": row[6],
+        }
+    finally:
+        conn.close()
+
+def add_clip(
+    clip_job_id: int,
+    file_path: str,
+    duration: int | None = None,
+) -> int:
+    conn = connect()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            INSERT INTO clips (clip_job_id, file_path, duration)
+            VALUES (%s, %s, %s)
+            RETURNING id;
+        """, (clip_job_id, file_path, duration))
+
+        clip_id = c.fetchone()[0]
+        conn.commit()
+        return clip_id
+    finally:
+        conn.close()
+
+def get_clips_for_job(clip_job_id: int):
+    conn = connect()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            SELECT
+                id,
+                file_path,
+                duration,
+                created_at
+            FROM clips
+            WHERE clip_job_id = %s
+            ORDER BY created_at ASC;
+        """, (clip_job_id,))
+
+        rows = c.fetchall()
+        return [
+            {
+                "id": r[0],
+                "file_path": r[1],
+                "duration": r[2],
+                "created_at": r[3],
+            }
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+def get_clip_job_with_clips(job_id: int):
+    job = get_clip_job(job_id)
+    if not job:
+        return None
+
+    job["clips"] = get_clips_for_job(job_id)
+    return job
