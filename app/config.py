@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     FRONTEND_BASE_URL: str = "http://localhost:3000"
     GOOGLE_CLIENT_SECRETS_FILE: Path = APP_DIR / "client_secret.json"
 
+    # AI
+    OPENAI_API_KEY: str | None = None
+    GROQ_API_KEY: str | None = None
+
     class Config:
         env_file = ".env"
         case_sensitive = True

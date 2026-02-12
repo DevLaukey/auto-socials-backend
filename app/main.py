@@ -6,10 +6,6 @@ Responsibilities:
 - Register routers
 - Provide health checks
 
-IMPORTANT:
-- No posting logic
-- No Instagrapi usage
-- No YouTube logic
 """
 
 from fastapi import FastAPI
@@ -26,6 +22,11 @@ from app.media import router as media_router
 from app.api.payments import router as payments_router
 from app.api.proxies import router as proxies_router
 from app.api.admin import router as admin_router
+from app.api.clips import router as clips_router
+from app.api.analytics import router as analytics_router
+from app.api.youtube_analytics import router as yt_router
+from app.services.database import init_db
+
 
 
 
@@ -65,6 +66,9 @@ def create_app() -> FastAPI:
         prefix="",
         tags=["subscriptions"]
     )
+    app.include_router(clips_router)
+    app.include_router(analytics_router)
+    app.include_router(yt_router)
 
     @app.get("/", tags=["health"])
     def health_check():
@@ -73,6 +77,11 @@ def create_app() -> FastAPI:
             "app": settings.APP_NAME,
             "environment": settings.ENV,
         }
+    
+    @app.on_event("startup")
+    def startup():
+        init_db()
+
 
     return app
 

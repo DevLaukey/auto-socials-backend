@@ -8,6 +8,7 @@ from app.services.database import (
     update_post_status,
     get_accounts_by_post_id,
     get_instagram_credentials,
+    save_youtube_video_id, 
     
 )
 
@@ -157,6 +158,12 @@ def execute_post(post: dict):
                         f"[EXECUTOR][POST {post_id}][ACCOUNT {account_id}][{platform}] FAILED: {account_exc}"
                     )
 
+                    update_post_status(
+                        post_id,
+                        "failed",
+                        error_message=str(account_exc),
+                    )
+
         if any_success:
             update_post_status(post_id, "posted")
             logger.info(f"[EXECUTOR][POST {post_id}] Status → posted")
@@ -261,6 +268,8 @@ def _post_to_instagram(post, caption, account_id):
 # =========================
 
 def _post_to_youtube(post, caption, creds):
+    post_id = post.get("id")
+
     media_file = post.get("media_file")
     if not media_file:
         raise FileNotFoundError("Post has no media_file")
@@ -275,7 +284,7 @@ def _post_to_youtube(post, caption, creds):
 
     logger.info("[YOUTUBE] Uploading video")
 
-    service.upload_video(
+    result = service.upload_video(
         video_file=str(media_path),
         title=post.get("title"),
         description=caption,
@@ -283,7 +292,16 @@ def _post_to_youtube(post, caption, creds):
         privacy_status=post.get("privacy_status", "private"),
     )
 
-    logger.info("[YOUTUBE] Upload completed")
+    video_id = result.get("video_id")
+
+    if not video_id:
+        raise RuntimeError("YouTube upload succeeded but no video_id returned")
+
+    # SAVE VIDEO ID TO DB
+    save_youtube_video_id(post_id, video_id)
+
+    logger.info(f"[YOUTUBE] Upload completed | video_id={video_id}")
+
 
 
 # =========================

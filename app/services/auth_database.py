@@ -122,6 +122,7 @@ def init_auth_db():
                     posts_per_day INTEGER NOT NULL,
                     comments_per_day INTEGER NOT NULL,
                     dms_per_day INTEGER NOT NULL,
+                    price INTEGER NOT NULL DEFAULT 0,
                     duration_days INTEGER NOT NULL DEFAULT 30,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 );
@@ -161,14 +162,15 @@ def init_auth_db():
             # SEED PLANS
             cur.execute("""
                 INSERT INTO subscription_plans
-                    (name, max_channels, posts_per_day, comments_per_day, dms_per_day)
+                    (name, max_channels, posts_per_day, comments_per_day, dms_per_day, price)
                 VALUES
-                    ('Tier 1', 3, 9, 9, 9),
-                    ('Tier 2', 10, 30, 30, 30),
-                    ('Tier 3', 100, 300, 300, 300),
-                    ('Tier 4', 1000, 3000, 3000, 3000),
-                    ('Tier 5 (Enterprise)', 10000, 30000, 30000, 30000)
+                    ('Tier 1', 3, 9, 9, 9, 1),
+                    ('Tier 2', 10, 30, 30, 30, 2),
+                    ('Tier 3', 100, 300, 300, 300, 3),
+                    ('Tier 4', 1000, 3000, 3000, 3000, 4),
+                    ('Tier 5 (Enterprise)', 10000, 30000, 30000, 30000, 5)
                 ON CONFLICT (name) DO NOTHING;
+                        
             """)
 
             # PAYMENT INTENTS & EVENTS

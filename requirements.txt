@@ -33,3 +33,13 @@ google-api-python-client
 
 # File uploads
 python-multipart
+
+# AI clipping
+
+openai-whisper
+torch
+ffmpeg-python
+ffmpeg
+yt-dlp
+openai>=1.0.0
+groq
