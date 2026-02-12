@@ -95,6 +95,15 @@ class YouTubeService:
         )
 
         response = request.execute()
-        logger.info("YouTube upload successful")
+        video_id = response.get("id")
 
-        return response
+        if not video_id:
+            raise RuntimeError("YouTube upload succeeded but no video ID returned")
+
+        logger.info(f"YouTube upload successful | video_id={video_id}")
+
+        return {
+            "video_id": video_id,
+            "raw_response": response,
+        }
+

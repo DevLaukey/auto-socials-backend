@@ -8,6 +8,7 @@ Responsibilities:
 
 import traceback
 import uuid
+import os
 from typing import Optional, List, Dict
 
 from app.services.youtube_downloader import download_youtube_video
@@ -15,7 +16,6 @@ from app.services.transcription import transcribe_video
 from app.services.clip_ai import select_segments
 from app.services.video_processing import generate_clip
 from app.services.subtitles import generate_srt_for_segment
-
 
 from app.services.database import (
     get_clip_job,
@@ -25,20 +25,18 @@ from app.services.database import (
 )
 
 # =========================================================
-# CLIP DURATION RULES (AUTHORITATIVE)
+# CLIP DURATION RULES
 # =========================================================
 
-MIN_CLIP_DURATION = 30  # seconds
-MAX_CLIP_DURATION = 60  # seconds
+MIN_CLIP_DURATION = 30
+MAX_CLIP_DURATION = 60
 
 
 def normalize_segments(
     segments: List[Dict],
     max_clips: int,
 ) -> List[Dict]:
-    """
-    Enforce clip duration constraints regardless of AI output.
-    """
+
     normalized: List[Dict] = []
 
     for seg in segments[:max_clips]:
@@ -46,11 +44,9 @@ def normalize_segments(
         end = float(seg["end"])
         reason = seg.get("reason", "")
 
-        # Ensure minimum duration
         if end - start < MIN_CLIP_DURATION:
             end = start + MIN_CLIP_DURATION
 
-        # Cap maximum duration
         if end - start > MAX_CLIP_DURATION:
             end = start + MAX_CLIP_DURATION
 
@@ -67,42 +63,45 @@ def normalize_segments(
 
 
 # =========================================================
-# API ENTRY POINT (used by FastAPI)
+# SHARED SOURCE RESOLUTION
+# =========================================================
+
+def resolve_video_source(
+    source_url: Optional[str],
+    local_video_path: Optional[str],
+) -> str:
+
+    if local_video_path and os.path.exists(local_video_path):
+        return local_video_path
+
+    if source_url:
+        return download_youtube_video(source_url)
+
+    raise ValueError("No valid video source provided")
+
+
+# =========================================================
+# API PIPELINE
 # =========================================================
 
 def run_clip_pipeline(
     source_url: Optional[str] = None,
     local_video_path: Optional[str] = None,
     max_clips: int = 3,
+    clip_length: int = 30,
+    style: str = "highlight",
 ) -> List[Dict]:
-    """
-    Run the full clip generation pipeline.
 
-    Returns:
-        [
-            {
-                "clip_id": str,
-                "video_path": str,
-                "duration": int,
-                "reason": str,
-            }
-        ]
-    """
+    video_path = resolve_video_source(source_url, local_video_path)
 
-    if not source_url and not local_video_path:
-        raise ValueError("Either source_url or local_video_path must be provided")
-
-    # Acquire video
-    if source_url:
-        video_path = download_youtube_video(source_url)
-    else:
-        video_path = local_video_path
-
-    # Transcribe
     transcript = transcribe_video(video_path)
 
-    # AI segment selection
-    raw_segments = select_segments(transcript)
+    raw_segments = select_segments(
+        transcript=transcript,
+        max_clips=max_clips,
+        clip_length=clip_length,
+        style=style,
+    )
 
     if not raw_segments:
         raise RuntimeError("AI did not return any usable segments")
@@ -114,9 +113,13 @@ def run_clip_pipeline(
 
     results: List[Dict] = []
 
-    # Generate clips
     for segment in segments:
-        srt_path = generate_srt_for_segment(transcript, segment)
+        srt_path = None
+        if transcript:
+            try:
+                srt_path = generate_srt_for_segment(transcript, segment)
+            except RuntimeError:
+                pass
 
         clip_path, duration = generate_clip(
             video_path=video_path,
@@ -135,16 +138,10 @@ def run_clip_pipeline(
 
 
 # =========================================================
-# DB-BACKED WORKER ENTRY POINT (background jobs)
+# DB BACKGROUND WORKER
 # =========================================================
 
 def run_clip_job(job_id: int):
-    """
-    Background worker entry point.
-
-    Uses the SAME logic as run_clip_pipeline,
-    but persists results to the database.
-    """
 
     try:
         job = get_clip_job(job_id)
@@ -153,18 +150,30 @@ def run_clip_job(job_id: int):
 
         update_clip_job_status(job_id, "processing", progress=5)
 
-        video_path = download_youtube_video(job["source_url"])
+        video_path = resolve_video_source(
+            job.get("source_url"),
+            job.get("local_video_path"),
+        )
+
         update_clip_job_status(job_id, "processing", progress=20)
 
         transcript = transcribe_video(video_path)
         update_clip_job_status(job_id, "processing", progress=40)
 
-        raw_segments = select_segments(transcript)
+        raw_segments = select_segments(
+            transcript=transcript,
+            max_clips=job["max_clips"],
+            clip_length=job["clip_length"],
+            style=job["style"],
+        )
 
         if not raw_segments:
             raise RuntimeError("AI did not return any usable segments")
 
-        segments = normalize_segments(raw_segments, max_clips=len(raw_segments))
+        segments = normalize_segments(
+            raw_segments,
+            max_clips=job["max_clips"],
+        )
 
         if not segments:
             raise RuntimeError("No valid segments after normalization")
@@ -174,7 +183,13 @@ def run_clip_job(job_id: int):
         total_segments = len(segments)
 
         for idx, segment in enumerate(segments):
-            srt_path = generate_srt_for_segment(transcript, segment)
+
+            srt_path = None
+            if transcript:
+                try:
+                    srt_path = generate_srt_for_segment(transcript, segment)
+                except RuntimeError:
+                    pass
 
             clip_path, duration = generate_clip(
                 video_path=video_path,

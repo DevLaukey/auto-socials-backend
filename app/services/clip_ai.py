@@ -12,61 +12,76 @@ from typing import List, Dict
 
 from app.config import settings
 
-# -------------------------
-# Provider detection
-# -------------------------
 
-USE_GROQ = bool(getattr(settings, "GROQ_API_KEY", None))
-USE_OPENAI = bool(getattr(settings, "OPENAI_API_KEY", None))
+# =========================================================
+# Provider detection (lazy, safe)
+# =========================================================
 
-if not USE_GROQ and not USE_OPENAI:
+def _get_provider():
+    if getattr(settings, "OPENAI_API_KEY", None):
+        from openai import OpenAI
+        return "openai", OpenAI(api_key=settings.OPENAI_API_KEY)
+
+    if getattr(settings, "GROQ_API_KEY", None):
+        from groq import Groq
+        return "groq", Groq(api_key=settings.GROQ_API_KEY)
+
     raise RuntimeError(
-        "No AI provider configured. Set GROQ_API_KEY or OPENAI_API_KEY."
+        "No AI provider configured. Set OPENAI_API_KEY or GROQ_API_KEY."
     )
 
-# -------------------------
-# OpenAI client (optional)
-# -------------------------
 
-if USE_OPENAI:
-    from openai import OpenAI
-    openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
+# =========================================================
+# Prompt builder
+# =========================================================
 
-# -------------------------
-# Groq client (optional)
-# -------------------------
+def build_system_prompt(clip_length: int, style: str) -> str:
+    style_rules = {
+        "highlight": "Focus on emotionally engaging, insightful, or impactful moments.",
+        "fast_cuts": "Prefer fast-paced, punchy moments with quick delivery.",
+        "podcast": "Prefer longer, coherent explanations or storytelling segments.",
+    }
 
-if USE_GROQ:
-    from groq import Groq
-    groq_client = Groq(api_key=settings.GROQ_API_KEY)
-
-# -------------------------
-# Prompt
-# -------------------------
-
-SYSTEM_PROMPT = """
+    return f"""
 You are an expert short-form video editor.
 
 Your job:
 - Identify the most engaging moments in a long-form video transcript
 - Select segments suitable for TikTok, YouTube Shorts, Instagram Reels
 
-Rules:
-- Each clip MUST be between 15 and 60 seconds
-- Clips must be continuous (no jumps)
-- Prefer moments with emotion, insight, humor, or strong explanations
+RULES:
+- Target clip length: ~{clip_length} seconds
+- Clips must be continuous
 - Avoid intros, outros, ads, sponsorships
+- Prefer natural sentence boundaries
+
+STYLE:
+{style_rules.get(style, style_rules["highlight"])}
+
+OUTPUT RULES:
 - Return ONLY valid JSON
-- Do NOT include commentary or explanation
+- No commentary, no markdown
+
+JSON FORMAT:
+[
+  {{
+    "start": number,
+    "end": number,
+    "reason": string
+  }}
+]
 """
 
-# -------------------------
+
+# =========================================================
 # Public API
-# -------------------------
+# =========================================================
 
 def select_segments(
     transcript: List[Dict],
-    max_clips: int = 5,
+    max_clips: int,
+    clip_length: int,
+    style: str = "highlight",
 ) -> List[Dict]:
     """
     Returns:
@@ -79,8 +94,15 @@ def select_segments(
     ]
     """
 
+    # Graceful handling for music / silent videos
     if not transcript:
-        raise ValueError("Transcript is empty")
+        return []
+
+    provider, client = _get_provider()
+
+    # Transcript duration safety
+    video_start = transcript[0]["start"]
+    video_end = transcript[-1]["end"]
 
     # Reduce token size
     compact_transcript = [
@@ -97,88 +119,87 @@ Here is a transcript with timestamps:
 
 {json.dumps(compact_transcript, indent=2)}
 
-Select up to {max_clips} short-form video segments.
+Select up to {max_clips} engaging segments.
 
-Output JSON format:
-[
-  {{
-    "start": number,
-    "end": number,
-    "reason": string
-  }}
-]
+IMPORTANT:
+- Each segment should be around {clip_length} seconds
+- Do NOT exceed transcript bounds
 """
 
-    # -------------------------
-    # Call AI provider
-    # -------------------------
+    system_prompt = build_system_prompt(
+        clip_length=clip_length,
+        style=style,
+    )
 
-    if USE_GROQ:
-        raw_output = _select_segments_groq(user_prompt)
-    else:
-        raw_output = _select_segments_openai(user_prompt)
+    # -------------------------------------------------
+    # Call provider
+    # -------------------------------------------------
 
-    # -------------------------
-    # Parse & validate
-    # -------------------------
+    if provider == "openai":
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.3,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        raw_output = response.choices[0].message.content.strip()
+
+    else:  # groq
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            temperature=0.3,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        raw_output = response.choices[0].message.content.strip()
+
+    # -------------------------------------------------
+    # Parse & validate (AUTHORITATIVE)
+    # -------------------------------------------------
 
     try:
         segments = json.loads(raw_output)
     except json.JSONDecodeError:
         raise RuntimeError("AI returned invalid JSON")
 
-    validated = []
+    validated: List[Dict] = []
+    used_ranges = []
 
     for seg in segments:
-        start = float(seg["start"])
-        end = float(seg["end"])
+        if len(validated) >= max_clips:
+            break
+
+        start = float(seg.get("start", 0))
+        end = start + clip_length
+
+        # Clamp to video bounds
+        if start < video_start:
+            start = video_start
+            end = start + clip_length
+
+        if end > video_end:
+            end = video_end
+            start = end - clip_length
 
         if end <= start:
             continue
 
-        duration = end - start
-        # if duration < 15 or duration > 60:
-        #     continue
+        # Prevent overlapping clips
+        if any(abs(start - s) < clip_length for s in used_ranges):
+            continue
+
+        used_ranges.append(start)
 
         validated.append(
             {
-                "start": start,
-                "end": end,
+                "start": round(start, 3),
+                "end": round(end, 3),
                 "reason": seg.get("reason", ""),
             }
         )
 
-    if not validated:
-        raise RuntimeError("AI did not produce valid clip segments")
-
     return validated
-
-# -------------------------
-# Provider implementations
-# -------------------------
-
-def _select_segments_openai(user_prompt: str) -> str:
-    response = openai_client.chat.completions.create(
-        model="gpt-4o-mini",
-        temperature=0.3,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-    )
-
-    return response.choices[0].message.content.strip()
-
-
-def _select_segments_groq(user_prompt: str) -> str:
-    response = groq_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        temperature=0.3,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-    )
-
-    return response.choices[0].message.content.strip()
-

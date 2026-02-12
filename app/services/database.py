@@ -110,6 +110,7 @@ def init_db():
         )
     """)
 
+
     # Migration: Add user_id column if missing
     c.execute("""
         ALTER TABLE groups
@@ -163,18 +164,47 @@ def init_db():
     # ===========================================
     # AI CLIP GENERATION TABLES
     # ===========================================
-
     c.execute("""
         CREATE TABLE IF NOT EXISTS clip_jobs (
             id SERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL,
-            source_url TEXT NOT NULL,
+            source_url TEXT,
+            local_video_path TEXT,
+            clip_length INTEGER DEFAULT 30,
+            max_clips INTEGER DEFAULT 3,
+            style TEXT DEFAULT 'highlight',
             status TEXT NOT NULL DEFAULT 'pending',
             progress INTEGER NOT NULL DEFAULT 0,
             error TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
     """)
+
+    c.execute("""
+        ALTER TABLE clip_jobs
+        ADD COLUMN IF NOT EXISTS local_video_path TEXT;
+    """)
+
+    c.execute("""
+        ALTER TABLE clip_jobs
+        ADD COLUMN IF NOT EXISTS clip_length INTEGER DEFAULT 30;
+    """)
+
+    c.execute("""
+        ALTER TABLE clip_jobs
+        ADD COLUMN IF NOT EXISTS max_clips INTEGER DEFAULT 3;
+    """)
+
+    c.execute("""
+        ALTER TABLE clip_jobs
+        ADD COLUMN IF NOT EXISTS style TEXT DEFAULT 'highlight';
+    """)
+
+    c.execute("""
+        ALTER TABLE clip_jobs
+        ADD COLUMN IF NOT EXISTS error TEXT;
+    """)
+
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS clips (
@@ -228,6 +258,55 @@ def init_db():
             FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
         )
     """)
+    # ===============================
+    # MIGRATION: Analytics fields
+    # ===============================
+
+    c.execute("""
+        ALTER TABLE posts
+        ADD COLUMN IF NOT EXISTS likes INTEGER NOT NULL DEFAULT 0;
+    """)
+
+    c.execute("""
+        ALTER TABLE posts
+        ADD COLUMN IF NOT EXISTS comments INTEGER NOT NULL DEFAULT 0;
+    """)
+
+    c.execute("""
+        ALTER TABLE posts
+        ADD COLUMN IF NOT EXISTS views INTEGER NOT NULL DEFAULT 0;
+    """)
+
+    c.execute("""
+        ALTER TABLE posts
+        ADD COLUMN IF NOT EXISTS shares INTEGER NOT NULL DEFAULT 0;
+    """)
+
+    c.execute("""
+        ALTER TABLE posts
+        ADD COLUMN IF NOT EXISTS error_message TEXT;
+    """)
+    c.execute("""
+        ALTER TABLE posts
+        ADD COLUMN IF NOT EXISTS youtube_video_id TEXT;
+    """)
+
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_posts_youtube_video
+        ON posts (youtube_video_id);
+    """)
+
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_posts_user_status
+        ON posts (user_id, status);
+    """)
+
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_posts_created_at
+        ON posts (created_at);
+    """)
+
+
 
     # Migration: Add user_id column if missing
     c.execute("""
@@ -719,14 +798,24 @@ def get_accounts_by_post_id(post_id):
     conn.close()
     return accounts
 
-def update_post_status(post_id, status):
+def update_post_status(post_id, status, error_message=None):
     with _db_lock:
         conn = connect()
         c = conn.cursor()
-        c.execute("UPDATE posts SET status = %s WHERE id = %s", (status, post_id))
+
+        c.execute("""
+            UPDATE posts
+            SET 
+                status = %s,
+                error_message = %s
+            WHERE id = %s
+        """, (status, error_message, post_id))
+
         conn.commit()
         conn.close()
+
     logger.info(f"Post {post_id} status → {status}")
+
 
 def update_post_schedule_time(post_id, scheduled_time):
     conn = connect()
@@ -1273,21 +1362,48 @@ def update_youtube_tokens(account_id: int, access_token: str, expires_at: int):
     conn.close()
 
 
-def create_clip_job(user_id: int, source_url: str) -> int:
+def create_clip_job(
+    user_id: int,
+    source_url: str | None,
+    local_video_path: str | None,
+    clip_length: int,
+    max_clips: int,
+    style: str,
+) -> int:
     conn = connect()
     c = conn.cursor()
     try:
-        c.execute("""
-            INSERT INTO clip_jobs (user_id, source_url, status, progress)
-            VALUES (%s, %s, 'pending', 0)
+        c.execute(
+            """
+            INSERT INTO clip_jobs (
+                user_id,
+                source_url,
+                local_video_path,
+                clip_length,
+                max_clips,
+                style,
+                status,
+                progress
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, 'pending', 0)
             RETURNING id;
-        """, (user_id, source_url))
+            """,
+            (
+                user_id,
+                source_url,
+                local_video_path,
+                clip_length,
+                max_clips,
+                style,
+            ),
+        )
 
         job_id = c.fetchone()[0]
         conn.commit()
         return job_id
     finally:
         conn.close()
+
 
 
 def update_clip_job_status(
@@ -1323,83 +1439,128 @@ def mark_clip_job_failed(job_id: int, error: str):
 def get_clip_job(job_id: int):
     conn = connect()
     c = conn.cursor()
-    try:
-        c.execute("""
-            SELECT
-                id,
-                user_id,
-                source_url,
-                status,
-                progress,
-                error,
-                created_at
-            FROM clip_jobs
-            WHERE id = %s;
-        """, (job_id,))
 
-        row = c.fetchone()
-        if not row:
-            return None
+    c.execute("""
+        SELECT
+            id,
+            user_id,
+            source_url,
+            local_video_path,
+            clip_length,
+            max_clips,
+            style,
+            status,
+            progress,
+            error,
+            created_at
+        FROM clip_jobs
+        WHERE id = %s;
+    """, (job_id,))
 
-        return {
+    row = c.fetchone()
+
+    c.close()
+    conn.close()
+
+    if not row:
+        return None
+
+    return {
+        "id": row[0],
+        "user_id": row[1],
+        "source_url": row[2],
+        "local_video_path": row[3],
+        "clip_length": row[4],
+        "max_clips": row[5],
+        "style": row[6],
+        "status": row[7],
+        "progress": row[8],
+        "error": row[9],
+        "created_at": row[10],
+    }
+
+
+def add_clip(clip_job_id: int, file_path: str, duration: int) -> int:
+    """
+    Insert a generated clip into the database.
+    """
+
+    conn = connect()
+    c = conn.cursor()
+
+    c.execute("""
+        INSERT INTO clips (clip_job_id, file_path, duration)
+        VALUES (%s, %s, %s)
+        RETURNING id;
+    """, (clip_job_id, file_path, duration))
+
+    clip_id = c.fetchone()[0]
+
+    conn.commit()
+    c.close()
+    conn.close()
+
+    return clip_id
+
+
+
+def get_clips_for_job(job_id: int):
+    """
+    Return all clips for a job.
+    """
+
+    conn = connect()
+    c = conn.cursor()
+
+    c.execute("""
+        SELECT
+            id,
+            clip_job_id,
+            file_path,
+            duration,
+            created_at
+        FROM clips
+        WHERE clip_job_id = %s
+        ORDER BY created_at ASC;
+    """, (job_id,))
+
+    rows = c.fetchall()
+
+    c.close()
+    conn.close()
+
+    clips = []
+
+    for row in rows:
+        clips.append({
             "id": row[0],
-            "user_id": row[1],
-            "source_url": row[2],
-            "status": row[3],
-            "progress": row[4],
-            "error": row[5],
-            "created_at": row[6],
-        }
-    finally:
-        conn.close()
+            "job_id": row[1],  # keeping API output consistent
+            "file_path": row[2],
+            "duration": row[3],
+            "created_at": row[4],
+        })
 
-def add_clip(
-    clip_job_id: int,
-    file_path: str,
-    duration: int | None = None,
-) -> int:
+    return clips
+
+
+
+def delete_clips_for_job(job_id: int):
+    """
+    Delete all clips belonging to a job.
+    """
+
     conn = connect()
     c = conn.cursor()
-    try:
-        c.execute("""
-            INSERT INTO clips (clip_job_id, file_path, duration)
-            VALUES (%s, %s, %s)
-            RETURNING id;
-        """, (clip_job_id, file_path, duration))
 
-        clip_id = c.fetchone()[0]
-        conn.commit()
-        return clip_id
-    finally:
-        conn.close()
+    c.execute("""
+        DELETE FROM clips
+        WHERE clip_job_id = %s;
+    """, (job_id,))
 
-def get_clips_for_job(clip_job_id: int):
-    conn = connect()
-    c = conn.cursor()
-    try:
-        c.execute("""
-            SELECT
-                id,
-                file_path,
-                duration,
-                created_at
-            FROM clips
-            WHERE clip_job_id = %s
-            ORDER BY created_at ASC;
-        """, (clip_job_id,))
+    conn.commit()
+    c.close()
+    conn.close()
 
-        rows = c.fetchall()
-        return [
-            {
-                "id": r[0],
-                "file_path": r[1],
-                "duration": r[2],
-                "created_at": r[3],
-            }
-            for r in rows
-        ]
-    finally:
-        conn.close()
 
 def get_clip_job_with_clips(job_id: int):
     job = get_clip_job(job_id)
@@ -1408,3 +1569,235 @@ def get_clip_job_with_clips(job_id: int):
 
     job["clips"] = get_clips_for_job(job_id)
     return job
+
+
+def get_post_overview(user_id: int):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT 
+            COUNT(*) as total_posts,
+            COUNT(*) FILTER (WHERE status = 'Success') as successful_posts,
+            COUNT(*) FILTER (WHERE status = 'Failed') as failed_posts
+        FROM posts
+        WHERE user_id = %s
+    """, (user_id,))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    total = row[0] or 0
+    success = row[1] or 0
+    failed = row[2] or 0
+
+    success_rate = (success / total * 100) if total > 0 else 0
+
+    return {
+        "total_posts": total,
+        "successful_posts": success,
+        "failed_posts": failed,
+        "success_rate": round(success_rate, 2)
+    }
+
+
+def get_platform_breakdown(user_id: int):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT 
+            a.platform,
+            COUNT(*) FILTER (WHERE p.status = 'Success') as success_count,
+            COUNT(*) FILTER (WHERE p.status = 'Failed') as failed_count
+        FROM posts p
+        JOIN posts_accounts pa ON p.id = pa.post_id
+        JOIN accounts a ON pa.account_id = a.id
+        WHERE p.user_id = %s
+        GROUP BY a.platform
+    """, (user_id,))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    results = {}
+    for platform, success, failed in rows:
+        total = (success or 0) + (failed or 0)
+
+        results[platform.lower()] = {
+            "success": success or 0,
+            "failed": failed or 0,
+            "success_rate": round((success / total * 100), 2) if total > 0 else 0
+        }
+
+    return results
+
+
+
+def get_daily_post_counts(user_id: int):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT 
+            DATE(created_at) as post_date,
+            COUNT(*) as count
+        FROM posts
+        WHERE user_id = %s
+        GROUP BY post_date
+        ORDER BY post_date ASC
+    """, (user_id,))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        {"date": str(row[0]), "count": row[1]}
+        for row in rows
+    ]
+
+def update_post_engagement(post_id: int, likes: int = 0, comments: int = 0, views: int = 0, shares: int = 0):
+    conn = connect()
+    c = conn.cursor()
+
+    c.execute("""
+        UPDATE posts
+        SET 
+            likes = %s,
+            comments = %s,
+            views = %s,
+            shares = %s
+        WHERE id = %s
+    """, (likes, comments, views, shares, post_id))
+
+    conn.commit()
+    conn.close()
+
+
+def get_engagement_stats(user_id: int):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT 
+            COALESCE(SUM(likes), 0),
+            COALESCE(SUM(comments), 0),
+            COALESCE(SUM(views), 0),
+            COALESCE(SUM(shares), 0)
+        FROM posts
+        WHERE user_id = %s
+        AND status = 'Success'
+    """, (user_id,))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    total_likes, total_comments, total_views, total_shares = row
+
+    total_posts_query = get_post_overview(user_id)
+    total_posts = total_posts_query["successful_posts"]
+
+    engagement_rate = (
+        (total_likes + total_comments + total_shares) / total_posts
+        if total_posts > 0 else 0
+    )
+
+    return {
+        "total_likes": total_likes,
+        "total_comments": total_comments,
+        "total_views": total_views,
+        "total_shares": total_shares,
+        "engagement_rate": round(engagement_rate, 2)
+    }
+
+
+def calculate_account_health(user_id: int):
+    overview = get_post_overview(user_id)
+    platform = get_platform_breakdown(user_id)
+
+    score = 0
+    issues = []
+
+    # 40% based on success rate
+    score += overview["success_rate"] * 0.4
+
+    if overview["success_rate"] < 70:
+        issues.append("Low success rate")
+
+    # Platform penalties
+    for p in platform.values():
+        if p["success_rate"] < 60:
+            score -= 5
+            issues.append("High failure rate on platform")
+
+    score = max(0, min(100, score))
+
+    if score >= 80:
+        status = "Excellent"
+    elif score >= 60:
+        status = "Good"
+    elif score >= 40:
+        status = "Fair"
+    else:
+        status = "Poor"
+
+    return {
+        "score": round(score),
+        "status": status,
+        "issues": issues
+    }
+
+
+def save_youtube_video_id(post_id: int, video_id: str):
+    conn = connect()
+    c = conn.cursor()
+
+    c.execute("""
+        UPDATE posts
+        SET youtube_video_id = %s
+        WHERE id = %s
+    """, (video_id, post_id))
+
+    conn.commit()
+    conn.close()
+
+def get_youtube_posts_with_tokens():
+    """
+    Returns posts that have a YouTube video ID
+    along with OAuth tokens for API calls.
+    """
+
+    conn = connect()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            p.id,
+            p.youtube_video_id,
+            t.access_token,
+            t.refresh_token,
+            t.expires_at
+        FROM posts p
+        JOIN posts_accounts pa ON p.id = pa.post_id
+        JOIN accounts a ON pa.account_id = a.id
+        JOIN tokens t ON t.account_id = a.id
+        WHERE LOWER(a.platform) = 'youtube'
+        AND p.youtube_video_id IS NOT NULL
+        AND p.status = 'posted'
+        AND p.created_at >= NOW() - INTERVAL '30 days'
+
+    """)
+
+    rows = cur.fetchall()
+    conn.close()
+
+    return [
+        {
+            "post_id": row[0],
+            "video_id": row[1],
+            "access_token": row[2],
+            "refresh_token": row[3],
+            "expires_at": row[4],
+        }
+        for row in rows
+    ]

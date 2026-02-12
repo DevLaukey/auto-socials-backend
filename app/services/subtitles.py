@@ -14,10 +14,19 @@ import uuid
 from app.config import settings
 
 
+# ---------------------------------------------------------
+# Timestamp formatting (SRT-safe)
+# ---------------------------------------------------------
+
 def _format_timestamp(seconds: float) -> str:
-    td = timedelta(seconds=seconds)
-    total_seconds = int(td.total_seconds())
-    millis = int((seconds - total_seconds) * 1000)
+    """
+    Convert seconds to SRT timestamp format (HH:MM:SS,mmm)
+    with floating-point safety.
+    """
+    seconds = max(0.0, round(seconds, 3))
+
+    millis = int((seconds % 1) * 1000)
+    total_seconds = int(seconds)
 
     hours = total_seconds // 3600
     minutes = (total_seconds % 3600) // 60
@@ -25,6 +34,10 @@ def _format_timestamp(seconds: float) -> str:
 
     return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
 
+
+# ---------------------------------------------------------
+# Public API
+# ---------------------------------------------------------
 
 def generate_srt_for_segment(
     transcript: List[Dict],
@@ -37,8 +50,8 @@ def generate_srt_for_segment(
         Path to SRT file (string)
     """
 
-    start = segment["start"]
-    end = segment["end"]
+    start = float(segment["start"])
+    end = float(segment["end"])
 
     media_root = Path(settings.MEDIA_ROOT)
     subtitles_dir = media_root / "subtitles"
@@ -47,23 +60,40 @@ def generate_srt_for_segment(
     srt_path = subtitles_dir / f"{uuid.uuid4()}.srt"
 
     index = 1
-    lines = []
+    lines: List[str] = []
+
+    # Readability constraints for Shorts/Reels
+    MIN_SUB_DURATION = 0.4  # seconds
+    MAX_LINE_LENGTH = 80
 
     for t in transcript:
-        if t["end"] < start or t["start"] > end:
+        t_start = float(t["start"])
+        t_end = float(t["end"])
+
+        # Skip subtitles completely outside clip
+        if t_end < start or t_start > end:
             continue
 
-        sub_start = max(t["start"], start) - start
-        sub_end = min(t["end"], end) - start
+        sub_start = max(t_start, start) - start
+        sub_end = min(t_end, end) - start
 
-        if sub_end <= sub_start:
+        # Skip invalid or unreadable subtitles
+        if sub_end - sub_start < MIN_SUB_DURATION:
             continue
+
+        text = t.get("text", "").strip()
+        if not text:
+            continue
+
+        # Prevent oversized subtitle blocks
+        if len(text) > MAX_LINE_LENGTH:
+            text = text[:MAX_LINE_LENGTH].rsplit(" ", 1)[0] + "…"
 
         lines.append(str(index))
         lines.append(
             f"{_format_timestamp(sub_start)} --> {_format_timestamp(sub_end)}"
         )
-        lines.append(t["text"])
+        lines.append(text)
         lines.append("")
         index += 1
 

@@ -35,10 +35,8 @@ def generate_clip(
     if not video_path.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
 
-    # ---- Segment validation ----
-    start = float(segment["start"])
-    end = float(segment["end"])
-    duration = int(end - start)
+    start = max(0.0, float(segment["start"]))
+    duration = int(segment["end"] - segment["start"])
 
     if duration <= 0:
         raise ValueError("Invalid clip duration")
@@ -50,19 +48,17 @@ def generate_clip(
 
     output_path = output_dir / f"{uuid.uuid4()}.mp4"
 
-    # ---- Base vertical crop (9:16) ----
-    # Uses input height as reference to avoid invalid sizes
+    # ---- SAFE vertical crop (ESCAPED COMMAS) ----
     crop_filter = (
         "crop="
-        "ih*9/16:"
-        "ih:"
-        "(iw-ih*9/16)/2:"
-        "0"
+        "if(gte(iw/ih\\,9/16)\\,ih*9/16\\,iw):"
+        "if(gte(iw/ih\\,9/16)\\,ih\\,iw*16/9):"
+        "(iw-ow)/2:"
+        "(ih-oh)/2"
     )
 
     filters = [crop_filter]
 
-    # ---- Optional burn-in subtitles ----
     if subtitles_path:
         sub_path = Path(subtitles_path).resolve()
         if not sub_path.exists():
@@ -70,7 +66,7 @@ def generate_clip(
 
         sub_path_safe = _ffmpeg_safe_path(sub_path)
 
-        subtitles_filter = (
+        filters.append(
             f"subtitles='{sub_path_safe}':"
             "force_style="
             "'FontName=Arial,"
@@ -82,21 +78,17 @@ def generate_clip(
             "Alignment=2'"
         )
 
-        filters.append(subtitles_filter)
-
-    # ---- Final filter chain ----
     vf_arg = ",".join(filters)
 
-    # ---- FFmpeg command ----
     command = [
         "ffmpeg",
         "-y",
         "-ss", str(start),
-        "-to", str(end),
         "-i", str(video_path),
+        "-t", str(duration),
         "-vf", vf_arg,
         "-map", "0:v:0",
-        "-map", "0:a?",  # audio is OPTIONAL
+        "-map", "0:a?",
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-crf", "23",
@@ -106,7 +98,6 @@ def generate_clip(
         str(output_path),
     ]
 
-    # ---- Run FFmpeg ----
     try:
         subprocess.run(
             command,
