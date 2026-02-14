@@ -26,6 +26,7 @@ from app.api.clips import router as clips_router
 from app.api.analytics import router as analytics_router
 from app.api.youtube_analytics import router as yt_router
 from app.services.database import init_db
+from app.services.auth_database import init_auth_db
 
 
 
@@ -81,6 +82,7 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     def startup():
         init_db()
+        init_auth_db()
 
 
     return app
