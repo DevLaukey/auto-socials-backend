@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel
 import datetime
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, require_admin
 from app.services.auth_database import get_conn, create_payment_intent
 
 router = APIRouter(prefix="/subscriptions", tags=["subscriptions"])
@@ -14,6 +14,16 @@ router = APIRouter(prefix="/subscriptions", tags=["subscriptions"])
 
 class Subscription(BaseModel):
     plan_id: int
+
+
+class CreateSubscriptionPlan(BaseModel):
+    name: str
+    max_channels: int
+    posts_per_day: int
+    comments_per_day: int
+    dms_per_day: int
+    price: int
+    duration_days: int = 30
 
 
 class UpdateSubscriptionPlan(BaseModel):
@@ -112,17 +122,62 @@ def subscribe(
         "payment_url": "https://app.zeroid.cc/paylink/89e8d2c5-be5c-4953-8b2f-43cd0bafcd95"
     }
 
+@router.get("/plans/{plan_id}")
+def get_subscription_plan(plan_id: int):
+    """Get a single subscription plan by ID."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    id, name, max_channels,
+                    posts_per_day, comments_per_day, dms_per_day,
+                    price, duration_days
+                FROM subscription_plans
+                WHERE id = %s
+            """, (plan_id,))
+            row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    return dict(row)
+
+
+@router.post("/plans", status_code=status.HTTP_201_CREATED)
+def create_subscription_plan(
+    payload: CreateSubscriptionPlan,
+    admin=Depends(require_admin),
+):
+    """Admin: create a new subscription plan."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO subscription_plans
+                    (name, max_channels, posts_per_day, comments_per_day, dms_per_day, price, duration_days)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (
+                payload.name,
+                payload.max_channels,
+                payload.posts_per_day,
+                payload.comments_per_day,
+                payload.dms_per_day,
+                payload.price,
+                payload.duration_days,
+            ))
+            row = cur.fetchone()
+        conn.commit()
+
+    return {"status": "created", "plan_id": row["id"]}
+
+
 @router.put("/plans/{plan_id}")
 def update_subscription_plan(
     plan_id: int,
     payload: UpdateSubscriptionPlan,
-    current_user: dict = Depends(get_current_user),
+    admin=Depends(require_admin),
 ):
-    from app.services.auth_database import is_admin_user
-
-    if not is_admin_user(current_user["id"]):
-        raise HTTPException(status_code=403, detail="Admin access required")
-
+    """Admin: update an existing subscription plan."""
     fields = []
     values = []
 
@@ -153,6 +208,43 @@ def update_subscription_plan(
         raise HTTPException(status_code=404, detail="Plan not found")
 
     return {"status": "updated", "plan_id": plan_id}
+
+
+@router.delete("/plans/{plan_id}")
+def delete_subscription_plan(
+    plan_id: int,
+    admin=Depends(require_admin),
+):
+    """Admin: delete a subscription plan (only if no active subscriptions use it)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Check if any active subscriptions reference this plan
+            cur.execute("""
+                SELECT COUNT(*) AS cnt
+                FROM user_subscriptions
+                WHERE plan_id = %s AND is_active = TRUE
+            """, (plan_id,))
+            count = cur.fetchone()["cnt"]
+
+            if count > 0:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Cannot delete: {count} active subscription(s) use this plan",
+                )
+
+            cur.execute("""
+                DELETE FROM subscription_plans
+                WHERE id = %s
+                RETURNING id
+            """, (plan_id,))
+            row = cur.fetchone()
+
+        conn.commit()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    return {"status": "deleted", "plan_id": plan_id}
 
 
 
