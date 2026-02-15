@@ -1,24 +1,16 @@
 """
-Whisper Transcription Service
+Whisper Transcription Service (OpenAI API)
 
 Responsibilities:
-- Transcribe video/audio files using Whisper
+- Transcribe video/audio files using the OpenAI Whisper API
 - Return timestamped segments usable for AI clipping
 - Gracefully handle videos with NO speech
 """
 
 import os
-import whisper
 from typing import List, Dict
-
-
-# ---------------------------------------------------------
-# Load model ONCE per worker
-# ---------------------------------------------------------
-
-WHISPER_MODEL = whisper.load_model(
-    "base"  # Use "small"/"medium" if GPU is available
-)
+from openai import OpenAI
+from app.config import settings
 
 
 # ---------------------------------------------------------
@@ -42,13 +34,17 @@ def transcribe_video(video_path: str) -> List[Dict]:
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"Video not found: {video_path}")
 
-    result = WHISPER_MODEL.transcribe(
-        video_path,
-        fp16=False,     # CPU-safe
-        verbose=False,
-    )
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
 
-    raw_segments = result.get("segments", [])
+    with open(video_path, "rb") as audio_file:
+        result = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+            response_format="verbose_json",
+            timestamp_granularities=["segment"],
+        )
+
+    raw_segments = result.segments or []
 
     segments: List[Dict] = []
 
@@ -60,7 +56,6 @@ def transcribe_video(video_path: str) -> List[Dict]:
         end = float(seg.get("end", 0))
         text = seg.get("text", "").strip()
 
-        # Skip invalid segments
         if not text:
             continue
 
@@ -78,9 +73,6 @@ def transcribe_video(video_path: str) -> List[Dict]:
             }
         )
 
-    # IMPORTANT:
-    # Do NOT crash on music-only or silent videos
-    # Let downstream logic decide what to do
     if not segments:
         return []
 

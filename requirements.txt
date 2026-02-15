@@ -16,7 +16,6 @@ python-dotenv
 python-jose[cryptography]
 passlib[bcrypt]
 bcrypt<4.0
-cryptography
 
 # Background tasks
 celery
@@ -35,11 +34,6 @@ google-api-python-client
 python-multipart
 
 # AI clipping
-
-openai-whisper
-torch
-ffmpeg-python
-ffmpeg
 yt-dlp
 openai>=1.0.0
 groq
