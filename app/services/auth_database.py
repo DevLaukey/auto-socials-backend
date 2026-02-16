@@ -128,6 +128,16 @@ def init_auth_db():
                 );
             """)
 
+            # Migration: Add missing columns to subscription_plans if they don't exist
+            cur.execute("""
+                ALTER TABLE subscription_plans
+                ADD COLUMN IF NOT EXISTS price INTEGER NOT NULL DEFAULT 0;
+            """)
+            cur.execute("""
+                ALTER TABLE subscription_plans
+                ADD COLUMN IF NOT EXISTS duration_days INTEGER NOT NULL DEFAULT 30;
+            """)
+
             # USER SUBSCRIPTIONS
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS user_subscriptions (
