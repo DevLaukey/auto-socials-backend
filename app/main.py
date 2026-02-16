@@ -5,11 +5,11 @@ Responsibilities:
 - Create FastAPI app
 - Register routers
 - Provide health checks
-
 """
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 
@@ -29,17 +29,18 @@ from app.services.database import init_db
 from app.services.auth_database import init_auth_db
 
 
-
-
-
 def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.APP_NAME,
         version="1.0.0",
     )
 
-    # ✅ CORS - Parse origins from environment variable (comma-separated)
-    cors_origins = [origin.strip() for origin in settings.CORS_ORIGINS.split(",") if origin.strip()]
+    # ✅ CORS
+    cors_origins = [
+        origin.strip()
+        for origin in settings.CORS_ORIGINS.split(",")
+        if origin.strip()
+    ]
 
     app.add_middleware(
         CORSMiddleware,
@@ -50,10 +51,18 @@ def create_app() -> FastAPI:
         expose_headers=["*"],
     )
 
-    # Database migrations are handled by the release command (app/migrate.py)
-    # No init_db() calls needed here - prevents crash loops on Fly.io
+    # =========================================================
+    # STATIC MEDIA (REQUIRED FOR CLIPS)
+    # =========================================================
+    app.mount(
+        "/media",
+        StaticFiles(directory=settings.MEDIA_ROOT),
+        name="media",
+    )
 
-    # ✅ ROUTERS (each included ONCE)
+    # =========================================================
+    # ROUTERS
+    # =========================================================
     app.include_router(auth_router)
     app.include_router(groups_router)
     app.include_router(social_accounts_router)
@@ -65,12 +74,15 @@ def create_app() -> FastAPI:
     app.include_router(
         subscriptions.router,
         prefix="",
-        tags=["subscriptions"]
+        tags=["subscriptions"],
     )
     app.include_router(clips_router)
     app.include_router(analytics_router)
     app.include_router(yt_router)
 
+    # =========================================================
+    # HEALTH CHECK
+    # =========================================================
     @app.get("/", tags=["health"])
     def health_check():
         return {
@@ -78,12 +90,14 @@ def create_app() -> FastAPI:
             "app": settings.APP_NAME,
             "environment": settings.ENV,
         }
-    
+
+    # =========================================================
+    # STARTUP
+    # =========================================================
     @app.on_event("startup")
     def startup():
         init_db()
         init_auth_db()
-
 
     return app
 
