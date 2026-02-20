@@ -371,6 +371,71 @@ def init_db():
         )
     """)
 
+     # ===========================================
+    # MESSAGING SYSTEM TABLES
+    # ===========================================
+    
+    # Conversations table
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS conversations (
+            id SERIAL PRIMARY KEY,
+            title TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            last_message_at TIMESTAMPTZ
+        );
+    """)
+    
+    # Conversation participants (many-to-many)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS conversation_participants (
+            conversation_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (conversation_id, user_id),
+            FOREIGN KEY (conversation_id) 
+                REFERENCES conversations(id) 
+                ON DELETE CASCADE,
+            FOREIGN KEY (user_id) 
+                REFERENCES auth.users(id) 
+                ON DELETE CASCADE
+        );
+    """)
+    
+    # Messages table
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id SERIAL PRIMARY KEY,
+            conversation_id INTEGER NOT NULL,
+            sender_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            is_read BOOLEAN NOT NULL DEFAULT FALSE,
+            FOREIGN KEY (conversation_id) 
+                REFERENCES conversations(id) 
+                ON DELETE CASCADE,
+            FOREIGN KEY (sender_id) 
+                REFERENCES auth.users(id) 
+                ON DELETE CASCADE
+        );
+    """)
+    
+    # Indexes for performance
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_messages_conversation 
+        ON messages (conversation_id, created_at DESC);
+    """)
+    
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_conversation_participants_user 
+        ON conversation_participants (user_id);
+    """)
+    
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_messages_unread 
+        ON messages (conversation_id, is_read) 
+        WHERE is_read = FALSE;
+    """)
+
     conn.commit()
     conn.close()
 
@@ -1570,6 +1635,62 @@ def get_clip_job_with_clips(job_id: int):
     job["clips"] = get_clips_for_job(job_id)
     return job
 
+
+from typing import List
+def get_all_clip_jobs_for_user(user_id: int) -> List[dict]:
+    """Get all clip jobs for a user"""
+    conn = connect()
+    c = conn.cursor()
+    
+    c.execute("""
+        SELECT
+            id,
+            user_id,
+            source_url,
+            local_video_path,
+            clip_length,
+            max_clips,
+            style,
+            status,
+            progress,
+            error,
+            created_at
+        FROM clip_jobs
+        WHERE user_id = %s
+        ORDER BY created_at DESC
+    """, (user_id,))
+    
+    rows = c.fetchall()
+    conn.close()
+    
+    jobs = []
+    for row in rows:
+        jobs.append({
+            "id": row[0],
+            "user_id": row[1],
+            "source_url": row[2],
+            "local_video_path": row[3],
+            "clip_length": row[4],
+            "max_clips": row[5],
+            "style": row[6],
+            "status": row[7],
+            "progress": row[8],
+            "error": row[9],
+            "created_at": row[10],
+        })
+    
+    return jobs
+
+def delete_clip_job_and_clips(job_id: int):
+    """Delete a clip job and all its clips from database"""
+    conn = connect()
+    c = conn.cursor()
+    
+    # Clips will be deleted automatically due to CASCADE
+    c.execute("DELETE FROM clip_jobs WHERE id = %s", (job_id,))
+    
+    conn.commit()
+    conn.close()
 
 def get_post_overview(user_id: int):
     conn = connect()

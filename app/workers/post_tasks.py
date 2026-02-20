@@ -45,7 +45,6 @@ def execute_scheduled_post(self, post_id: int):
         post = get_post_details_by_post_id(post_id)
         logger.info(f"[POST {post_id}] Post keys: {post.keys()}")
 
-
         if not post:
             logger.error(
                 f"[CELERY][TASK {task_id}][POST {post_id}] Post not found in DB – aborting"

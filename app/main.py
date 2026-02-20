@@ -5,11 +5,11 @@ Responsibilities:
 - Create FastAPI app
 - Register routers
 - Provide health checks
-
 """
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 
@@ -18,7 +18,7 @@ from app.api import subscriptions
 from app.api.social_accounts import router as social_accounts_router
 from app.api.groups import router as groups_router
 from app.api.posts import router as posts_router
-from app.media import router as media_router
+from app.api.media import router as media_router
 from app.api.payments import router as payments_router
 from app.api.proxies import router as proxies_router
 from app.api.admin import router as admin_router
@@ -27,9 +27,7 @@ from app.api.analytics import router as analytics_router
 from app.api.youtube_analytics import router as yt_router
 from app.services.database import init_db
 from app.services.auth_database import init_auth_db
-
-
-
+from app.api.messages import router as messages_router
 
 
 def create_app() -> FastAPI:
@@ -38,8 +36,12 @@ def create_app() -> FastAPI:
         version="1.0.0",
     )
 
-    # ✅ CORS - Parse origins from environment variable (comma-separated)
-    cors_origins = [origin.strip() for origin in settings.CORS_ORIGINS.split(",") if origin.strip()]
+    # ✅ CORS
+    cors_origins = [
+        origin.strip()
+        for origin in settings.CORS_ORIGINS.split(",")
+        if origin.strip()
+    ]
 
     app.add_middleware(
         CORSMiddleware,
@@ -50,10 +52,19 @@ def create_app() -> FastAPI:
         expose_headers=["*"],
     )
 
-    # Database migrations are handled by the release command (app/migrate.py)
-    # No init_db() calls needed here - prevents crash loops on Fly.io
+    # =========================================================
+    # STATIC MEDIA (REQUIRED FOR CLIPS)
+    # =========================================================
+    # Mount the entire media root at /media
+    app.mount(
+        "/media",
+        StaticFiles(directory=settings.MEDIA_ROOT),
+        name="media",
+    )
 
-    # ✅ ROUTERS (each included ONCE)
+    # =========================================================
+    # ROUTERS
+    # =========================================================
     app.include_router(auth_router)
     app.include_router(groups_router)
     app.include_router(social_accounts_router)
@@ -65,12 +76,16 @@ def create_app() -> FastAPI:
     app.include_router(
         subscriptions.router,
         prefix="",
-        tags=["subscriptions"]
+        tags=["subscriptions"],
     )
     app.include_router(clips_router)
     app.include_router(analytics_router)
     app.include_router(yt_router)
+    app.include_router(messages_router)
 
+    # =========================================================
+    # HEALTH CHECK
+    # =========================================================
     @app.get("/", tags=["health"])
     def health_check():
         return {
@@ -78,12 +93,14 @@ def create_app() -> FastAPI:
             "app": settings.APP_NAME,
             "environment": settings.ENV,
         }
-    
+
+    # =========================================================
+    # STARTUP
+    # =========================================================
     @app.on_event("startup")
     def startup():
         init_db()
         init_auth_db()
-
 
     return app
 

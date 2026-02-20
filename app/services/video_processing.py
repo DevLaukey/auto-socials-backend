@@ -43,6 +43,7 @@ def generate_clip(
 
     # ---- Output paths ----
     media_root = Path(settings.MEDIA_ROOT).resolve()
+    # Save clips in media_root/clips/ (not media_root/media/clips/)
     output_dir = media_root / "clips"
     output_dir.mkdir(parents=True, exist_ok=True)
 
