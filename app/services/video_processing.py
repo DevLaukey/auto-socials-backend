@@ -42,12 +42,11 @@ def generate_clip(
         raise ValueError("Invalid clip duration")
 
     # ---- Output paths ----
-    media_root = Path(settings.MEDIA_ROOT).resolve()
-    # Save clips in media_root/clips/ (not media_root/media/clips/)
-    output_dir = media_root / "clips"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Use settings for directories
+    clips_dir = Path(settings.CLIPS_DIR).resolve()
+    clips_dir.mkdir(parents=True, exist_ok=True)
 
-    output_path = output_dir / f"{uuid.uuid4()}.mp4"
+    output_path = clips_dir / f"{uuid.uuid4()}.mp4"
 
     # ---- SAFE vertical crop (ESCAPED COMMAS) ----
     crop_filter = (

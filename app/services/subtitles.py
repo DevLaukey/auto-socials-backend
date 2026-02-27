@@ -8,7 +8,6 @@ Responsibilities:
 
 from pathlib import Path
 from typing import List, Dict
-from datetime import timedelta
 import uuid
 
 from app.config import settings
@@ -53,8 +52,8 @@ def generate_srt_for_segment(
     start = float(segment["start"])
     end = float(segment["end"])
 
-    media_root = Path(settings.MEDIA_ROOT)
-    subtitles_dir = media_root / "subtitles"
+    # Use settings for subtitles directory
+    subtitles_dir = Path(settings.SUBTITLES_DIR)
     subtitles_dir.mkdir(parents=True, exist_ok=True)
 
     srt_path = subtitles_dir / f"{uuid.uuid4()}.srt"

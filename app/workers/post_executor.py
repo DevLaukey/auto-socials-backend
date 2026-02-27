@@ -48,6 +48,32 @@ MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 5
 
 # =========================
+# Helper function to clean media paths
+# =========================
+
+def _clean_media_path(media_path: str) -> str:
+    """
+    Clean the media path by removing any URL prefixes.
+    Returns a path relative to MEDIA_ROOT.
+    """
+    # Remove full URL if present
+    if '://' in media_path:
+        # Extract everything after the domain
+        media_path = '/' + '/'.join(media_path.split('/')[3:])
+    
+    # Remove leading /media/ if present (for full URLs)
+    if media_path.startswith('/media/'):
+        media_path = media_path[7:]  # Remove '/media/'
+    elif media_path.startswith('media/'):
+        media_path = media_path[6:]  # Remove 'media/'
+    
+    # Remove leading slash if present
+    if media_path.startswith('/'):
+        media_path = media_path[1:]
+    
+    return media_path
+
+# =========================
 # Main executor
 # =========================
 
@@ -241,10 +267,31 @@ def _post_to_instagram(post, caption, account_id):
         if not relative_media:
             raise FileNotFoundError("Post has no media_file")
 
-        media_path = MEDIA_ROOT / relative_media
+        # Clean the media path
+        clean_path = _clean_media_path(relative_media)
+        
+        # The file should be in the uploads directory
+        media_path = MEDIA_ROOT / "uploads" / Path(clean_path).name
 
         if not media_path.exists():
-            raise FileNotFoundError(f"Media file not found: {media_path}")
+            # Try alternative paths as fallback
+            alt_paths = [
+                MEDIA_ROOT / clean_path,  # direct path
+                MEDIA_ROOT / "clips" / Path(clean_path).name,  # clips directory
+                MEDIA_ROOT / Path(clean_path).name,  # media root
+            ]
+            
+            found = False
+            for alt_path in alt_paths:
+                if alt_path.exists():
+                    media_path = alt_path
+                    found = True
+                    break
+            
+            if not found:
+                raise FileNotFoundError(
+                    f"Media file not found. Tried: {media_path}, {alt_paths}"
+                )
 
         logger.info(f"[INSTAGRAM][ACCOUNT {account_id}] Media verified → {media_path}")
 
@@ -274,9 +321,19 @@ def _post_to_youtube(post, caption, creds):
     if not media_file:
         raise FileNotFoundError("Post has no media_file")
 
-    media_path = MEDIA_ROOT / media_file
+    # Clean the media path
+    clean_path = _clean_media_path(media_file)
+    
+    # Try to find the file
+    media_path = MEDIA_ROOT / "uploads" / Path(clean_path).name
+    
     if not media_path.exists():
-        raise FileNotFoundError(f"Video file not found: {media_path}")
+        # Try alternative paths
+        alt_path = MEDIA_ROOT / clean_path
+        if alt_path.exists():
+            media_path = alt_path
+        else:
+            raise FileNotFoundError(f"Video file not found: {media_path} (tried: {alt_path})")
 
     logger.info("[YOUTUBE] Media verified")
 

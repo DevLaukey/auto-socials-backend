@@ -14,6 +14,10 @@ from app.config import settings
 from app.utils.security import verify_password
 
 import uuid
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 AUTH_SCHEMA = "auth"
 
@@ -404,6 +408,7 @@ def _load_youtube_credentials(account_id: int) -> Optional[Credentials]:
 def get_valid_youtube_token(account_id: int) -> Optional[Credentials]:
     """
     Returns a VALID YouTube Credentials object.
+    If refresh fails, deletes the token.
 
     SAFE FOR:
     - FastAPI requests
@@ -429,11 +434,19 @@ def get_valid_youtube_token(account_id: int) -> Optional[Credentials]:
 
     if needs_refresh:
         if not creds.refresh_token:
-            raise RuntimeError(
-                f"YouTube token for account {account_id} has no refresh token"
+            logger.warning(
+                f"YouTube token for account {account_id} has no refresh token – deleting"
             )
+            delete_youtube_token(account_id)
+            return None
 
-        creds.refresh(Request())
+        try:
+            creds.refresh(Request())
+        except Exception as e:
+            logger.error(f"Failed to refresh token for account {account_id}: {e}")
+            delete_youtube_token(account_id)
+            return None
+
         store_token_in_db(account_id, creds)
 
     return creds
@@ -459,6 +472,25 @@ def refresh_youtube_token_now(account_id: int) -> bool:
     creds.refresh(Request())
     store_token_in_db(account_id, creds)
     return True
+
+def delete_youtube_token(account_id: int) -> bool:
+    """
+    Delete YouTube token for an account (when refresh fails)
+    Returns True if deleted, False if not found
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM youtube_tokens
+                WHERE account_id = %s
+                RETURNING account_id
+                """,
+                (account_id,)
+            )
+            deleted = cur.fetchone()
+            conn.commit()
+            return deleted is not None
 
 def get_active_subscription(conn, user_id: int):
     now = datetime.utcnow()

@@ -9,8 +9,6 @@ import urllib.parse
 from sqlalchemy.orm import Session
 from app.api.subscriptions import Subscription
 
-
-
 from app.api.deps import get_current_user
 
 from app.services.auth_database import (
@@ -21,6 +19,7 @@ from app.services.auth_database import (
     get_conn,
     get_active_subscription,
     get_user_by_email,
+    delete_youtube_token,
 )
 
 from app.utils.security import hash_password, create_access_token
@@ -37,7 +36,14 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/youtube.readonly",
 ]
 
-REDIRECT_URI = f"{settings.API_BASE_URL}/auth/youtube/callback"
+# Dynamic redirect URI based on environment
+def get_redirect_uri():
+    """Return the appropriate redirect URI based on the current environment"""
+    if settings.ENV == "production":
+        return f"{settings.API_BASE_URL}/auth/youtube/callback"
+    else:
+        return "http://localhost:8000/auth/youtube/callback"
+
 FRONTEND_BASE_URL = settings.FRONTEND_BASE_URL
 
 # -----------------------------
@@ -193,13 +199,23 @@ def me(current_user: dict = Depends(get_current_user)):
 # =====================================================
 
 def get_google_flow():
-        client_config = json.loads(settings.GOOGLE_CLIENT_SECRETS_FILE_JSON.read_text())
-
-        return Flow.from_client_config(
-            client_config,
-            scopes=GOOGLE_SCOPES,
-            redirect_uri=REDIRECT_URI,
+    """
+    Create Google OAuth flow using either environment variable or local file
+    """
+    if not settings.GOOGLE_CLIENT_SECRETS_JSON:
+        raise HTTPException(
+            status_code=500,
+            detail="Google OAuth not configured. Missing client secrets."
         )
+    
+    redirect_uri = get_redirect_uri()
+    print(f"[AUTH] Using redirect URI: {redirect_uri}")
+    
+    return Flow.from_client_config(
+        settings.GOOGLE_CLIENT_SECRETS_JSON,
+        scopes=GOOGLE_SCOPES,
+        redirect_uri=redirect_uri,
+    )
 
 @router.get("/youtube/start/{account_id}")
 def youtube_auth_start(
@@ -210,15 +226,20 @@ def youtube_auth_start(
     """
     Starts YouTube OAuth flow
     """
-
+    
+    if next.startswith(('http://', 'https://')):
+        from urllib.parse import urlparse
+        parsed = urlparse(next)
+        next = parsed.path
+        if parsed.query:
+            next += f"?{parsed.query}"
+    
     state_payload = {
         "account_id": account_id,
         "redirect": next,
     }
 
     state = urllib.parse.quote(json.dumps(state_payload))
-
-    
     
     flow = get_google_flow()
 
@@ -229,7 +250,6 @@ def youtube_auth_start(
         state=state,
     )
 
-    # IMPORTANT: force 302
     return RedirectResponse(auth_url, status_code=302)
 
 
@@ -252,11 +272,26 @@ def youtube_auth_callback(
     account_id = state_data["account_id"]
     redirect_path = state_data.get("redirect", "/")
 
+    # If redirect_path is a full URL, extract just the path
+    if redirect_path.startswith(('http://', 'https://')):
+        from urllib.parse import urlparse
+        parsed = urlparse(redirect_path)
+        redirect_path = parsed.path
+        # Add back query params if needed
+        if parsed.query:
+            redirect_path += f"?{parsed.query}"
+    
+    base_url = FRONTEND_BASE_URL.rstrip('/')
+    
+    # Ensure redirect_path starts with a slash
+    if not redirect_path.startswith('/'):
+        redirect_path = '/' + redirect_path
+
     # ---- GUARD: prevent replay / double-callback ----
     existing_token = get_valid_youtube_token(account_id)
     if existing_token:
         return RedirectResponse(
-            f"{FRONTEND_BASE_URL}{redirect_path}?youtube=connected",
+            f"{base_url}{redirect_path}?youtube=connected",
             status_code=302,
         )
 
@@ -271,7 +306,7 @@ def youtube_auth_callback(
     store_token_in_db(account_id, creds)
 
     return RedirectResponse(
-        f"{FRONTEND_BASE_URL}{redirect_path}?youtube=connected",
+        f"{base_url}{redirect_path}?youtube=connected",
         status_code=302,
     )
 
@@ -281,17 +316,31 @@ def youtube_auth_status(
     account_id: int,
     current_user: dict = Depends(get_current_user),
 ):
-    token = get_valid_youtube_token(account_id)
-
-    if not token:
+    """
+    Check if a YouTube account is authenticated.
+    Returns auth_url if not authenticated or token is invalid.
+    """
+    try:
+        token = get_valid_youtube_token(account_id)
+        
+        if token:
+            return {
+                "authenticated": True,
+                "account_id": account_id
+            }
+        else:
+            return {
+                "authenticated": False,
+                "auth_url": f"{settings.API_BASE_URL}/auth/youtube/start/{account_id}",
+            }
+    except Exception as e:
+        # Token refresh failed - need reauthentication
+        print(f"[AUTH] Token validation failed for account {account_id}: {e}")
         return {
             "authenticated": False,
             "auth_url": f"{settings.API_BASE_URL}/auth/youtube/start/{account_id}",
+            "error": "Token expired or invalid"
         }
-
-    return {
-        "authenticated": True
-    }
 
 
 from app.services.auth_database import create_password_reset_token, reset_password_with_token
