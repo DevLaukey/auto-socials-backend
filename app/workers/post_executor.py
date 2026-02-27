@@ -3,6 +3,8 @@ import logging
 import os
 import time
 from pathlib import Path
+import requests
+import tempfile
 
 from app.services.database import (
     update_post_status,
@@ -48,8 +50,69 @@ MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 5
 
 # =========================
-# Helper function to clean media paths
+# Helper functions for cloud URLs
 # =========================
+
+def _is_cloud_url(path: str) -> bool:
+    """Check if a path is a cloud URL (starts with http:// or https://)"""
+    return path.startswith(('http://', 'https://'))
+
+
+def _download_from_url(url: str) -> str:
+    """
+    Download a file from a URL to a temporary location.
+    Returns the local path to the downloaded file.
+    """
+    logger.info(f"Downloading media from URL: {url}")
+    
+    try:
+        response = requests.get(url, stream=True, timeout=30)
+        response.raise_for_status()
+        
+        # Determine file extension from URL or content-type
+        content_type = response.headers.get('content-type', '')
+        ext = '.tmp'
+        
+        if 'image/jpeg' in content_type or 'image/jpg' in content_type:
+            ext = '.jpg'
+        elif 'image/png' in content_type:
+            ext = '.png'
+        elif 'image/gif' in content_type:
+            ext = '.gif'
+        elif 'image/webp' in content_type:
+            ext = '.webp'
+        elif 'video/mp4' in content_type:
+            ext = '.mp4'
+        elif 'video/quicktime' in content_type:
+            ext = '.mov'
+        elif 'video/x-msvideo' in content_type:
+            ext = '.avi'
+        else:
+            # Try to get extension from URL
+            url_path = url.split('?')[0]
+            if '.' in url_path:
+                ext = '.' + url_path.split('.')[-1].lower()
+        
+        # Create a temporary file
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp_file:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    tmp_file.write(chunk)
+            tmp_path = tmp_file.name
+        
+        logger.info(f"Downloaded to temporary file: {tmp_path} (size: {os.path.getsize(tmp_path)} bytes)")
+        return tmp_path
+        
+    except requests.exceptions.Timeout:
+        logger.error(f"Timeout downloading from URL {url}")
+        raise RuntimeError(f"Timeout downloading media from URL")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to download from URL {url}: {e}")
+        raise RuntimeError(f"Failed to download media: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error downloading from URL {url}: {e}")
+        raise
+
 
 def _clean_media_path(media_path: str) -> str:
     """
@@ -256,6 +319,7 @@ def _post_to_instagram(post, caption, account_id):
     if not lock.acquire():
         raise RuntimeError("Account is currently locked")
 
+    temp_files = []  # Track temporary files to clean up
     try:
         logger.info(f"[INSTAGRAM][ACCOUNT {account_id}] Lock acquired")
 
@@ -267,37 +331,45 @@ def _post_to_instagram(post, caption, account_id):
         if not relative_media:
             raise FileNotFoundError("Post has no media_file")
 
-        # Clean the media path
-        clean_path = _clean_media_path(relative_media)
-        
-        # The file should be in the uploads directory
-        media_path = MEDIA_ROOT / "uploads" / Path(clean_path).name
+        # Check if it's a cloud URL
+        if _is_cloud_url(relative_media):
+            logger.info(f"[INSTAGRAM][ACCOUNT {account_id}] Detected cloud URL, downloading...")
+            media_path = _download_from_url(relative_media)
+            temp_files.append(media_path)
+        else:
+            # Clean the media path for local files
+            clean_path = _clean_media_path(relative_media)
+            
+            # The file should be in the uploads directory
+            media_path = MEDIA_ROOT / "uploads" / Path(clean_path).name
 
-        if not media_path.exists():
-            # Try alternative paths as fallback
-            alt_paths = [
-                MEDIA_ROOT / clean_path,  # direct path
-                MEDIA_ROOT / "clips" / Path(clean_path).name,  # clips directory
-                MEDIA_ROOT / Path(clean_path).name,  # media root
-            ]
+            if not media_path.exists():
+                # Try alternative paths as fallback
+                alt_paths = [
+                    MEDIA_ROOT / clean_path,  # direct path
+                    MEDIA_ROOT / "clips" / Path(clean_path).name,  # clips directory
+                    MEDIA_ROOT / Path(clean_path).name,  # media root
+                ]
+                
+                found = False
+                for alt_path in alt_paths:
+                    if alt_path.exists():
+                        media_path = alt_path
+                        found = True
+                        break
+                
+                if not found:
+                    raise FileNotFoundError(
+                        f"Media file not found. Tried: {media_path}, {alt_paths}"
+                    )
             
-            found = False
-            for alt_path in alt_paths:
-                if alt_path.exists():
-                    media_path = alt_path
-                    found = True
-                    break
-            
-            if not found:
-                raise FileNotFoundError(
-                    f"Media file not found. Tried: {media_path}, {alt_paths}"
-                )
+            media_path = str(media_path)
 
         logger.info(f"[INSTAGRAM][ACCOUNT {account_id}] Media verified → {media_path}")
 
         service = InstagramService(account_id)
         service.execute_post(
-            media_path=str(media_path),
+            media_path=media_path,  # This can be either local path or downloaded temp file
             caption=caption,
             post_type=post.get("post_type", "feed"),
             share_to_feed=post.get("share_to_feed", True),
@@ -305,7 +377,20 @@ def _post_to_instagram(post, caption, account_id):
 
         logger.info(f"[INSTAGRAM][ACCOUNT {account_id}] Post successful")
 
+    except Exception as e:
+        logger.error(f"[INSTAGRAM][ACCOUNT {account_id}] Post failed: {e}")
+        raise
+
     finally:
+        # Clean up any temporary files
+        for temp_file in temp_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.unlink(temp_file)
+                    logger.info(f"[INSTAGRAM][ACCOUNT {account_id}] Cleaned up temp file: {temp_file}")
+            except Exception as e:
+                logger.warning(f"[INSTAGRAM][ACCOUNT {account_id}] Failed to clean up temp file: {e}")
+        
         lock.release()
         logger.info(f"[INSTAGRAM][ACCOUNT {account_id}] Lock released")
 
@@ -321,44 +406,67 @@ def _post_to_youtube(post, caption, creds):
     if not media_file:
         raise FileNotFoundError("Post has no media_file")
 
-    # Clean the media path
-    clean_path = _clean_media_path(media_file)
-    
-    # Try to find the file
-    media_path = MEDIA_ROOT / "uploads" / Path(clean_path).name
-    
-    if not media_path.exists():
-        # Try alternative paths
-        alt_path = MEDIA_ROOT / clean_path
-        if alt_path.exists():
-            media_path = alt_path
+    temp_files = []  # Track temporary files to clean up
+    try:
+        # Check if it's a cloud URL
+        if _is_cloud_url(media_file):
+            logger.info(f"[YOUTUBE][POST {post_id}] Detected cloud URL, downloading...")
+            media_path = _download_from_url(media_file)
+            temp_files.append(media_path)
         else:
-            raise FileNotFoundError(f"Video file not found: {media_path} (tried: {alt_path})")
+            # Clean the media path for local files
+            clean_path = _clean_media_path(media_file)
+            
+            # Try to find the file
+            media_path = MEDIA_ROOT / "uploads" / Path(clean_path).name
+            
+            if not media_path.exists():
+                # Try alternative paths
+                alt_path = MEDIA_ROOT / clean_path
+                if alt_path.exists():
+                    media_path = alt_path
+                else:
+                    raise FileNotFoundError(f"Video file not found: {media_path} (tried: {alt_path})")
+            
+            media_path = str(media_path)
 
-    logger.info("[YOUTUBE] Media verified")
+        logger.info(f"[YOUTUBE][POST {post_id}] Media verified: {media_path}")
 
-    service = YouTubeService(credentials=creds)
+        service = YouTubeService(credentials=creds)
 
-    logger.info("[YOUTUBE] Uploading video")
+        logger.info(f"[YOUTUBE][POST {post_id}] Uploading video")
 
-    result = service.upload_video(
-        video_file=str(media_path),
-        title=post.get("title"),
-        description=caption,
-        tags=post.get("tags"),
-        privacy_status=post.get("privacy_status", "private"),
-    )
+        result = service.upload_video(
+            video_file=media_path,
+            title=post.get("title"),
+            description=caption,
+            tags=post.get("tags"),
+            privacy_status=post.get("privacy_status", "private"),
+        )
 
-    video_id = result.get("video_id")
+        video_id = result.get("video_id")
 
-    if not video_id:
-        raise RuntimeError("YouTube upload succeeded but no video_id returned")
+        if not video_id:
+            raise RuntimeError("YouTube upload succeeded but no video_id returned")
 
-    # SAVE VIDEO ID TO DB
-    save_youtube_video_id(post_id, video_id)
+        # SAVE VIDEO ID TO DB
+        save_youtube_video_id(post_id, video_id)
 
-    logger.info(f"[YOUTUBE] Upload completed | video_id={video_id}")
-
+        logger.info(f"[YOUTUBE][POST {post_id}] Upload completed | video_id={video_id}")
+        
+    except Exception as e:
+        logger.error(f"[YOUTUBE][POST {post_id}] Upload failed: {e}")
+        raise
+        
+    finally:
+        # Clean up any temporary files
+        for temp_file in temp_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.unlink(temp_file)
+                    logger.info(f"[YOUTUBE][POST {post_id}] Cleaned up temp file: {temp_file}")
+            except Exception as e:
+                logger.warning(f"[YOUTUBE][POST {post_id}] Failed to clean up temp file: {e}")
 
 
 # =========================
