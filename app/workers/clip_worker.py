@@ -9,6 +9,7 @@ Responsibilities:
 import traceback
 import uuid
 import os
+from pathlib import Path
 from typing import Optional, List, Dict
 
 from app.services.youtube_downloader import download_youtube_video
@@ -16,6 +17,7 @@ from app.services.transcription import transcribe_video
 from app.services.clip_ai import select_segments
 from app.services.video_processing import generate_clip
 from app.services.subtitles import generate_srt_for_segment
+from app.services.storage import upload_file
 
 from app.services.database import (
     get_clip_job,
@@ -204,15 +206,24 @@ def run_clip_job(job_id: int):
                 segment=segment,
                 subtitles_path=srt_path,
             )
-            
+
             print(f"[Job {job_id}] Clip {clip_number} generated: {clip_path} (duration: {duration}s)")
+
+            # Upload clip to cloud storage and delete local file
+            remote_key = f"clips/{Path(clip_path).name}"
+            clip_url = upload_file(clip_path, remote_key)
+            try:
+                os.unlink(clip_path)
+                print(f"[Job {job_id}] Deleted local clip file: {clip_path}")
+            except OSError as e:
+                print(f"[Job {job_id}] Warning: could not delete local clip: {e}")
 
             add_clip(
                 clip_job_id=job_id,
-                file_path=clip_path,
+                file_path=clip_url,  # store the public URL, not a local path
                 duration=duration,
             )
-            print(f"[Job {job_id}] Clip {clip_number} saved to database")
+            print(f"[Job {job_id}] Clip {clip_number} saved to database with URL: {clip_url}")
 
             # Update after clip is generated
             incremental_progress = base_progress + int(
@@ -228,6 +239,16 @@ def run_clip_job(job_id: int):
         # ----------------------------------
         # Final Completion
         # ----------------------------------
+        # Delete the local input video if it came from an upload (not a download
+        # that may be shared or expected to persist)
+        local_video_path = job.get("local_video_path")
+        if local_video_path and os.path.exists(local_video_path):
+            try:
+                os.unlink(local_video_path)
+                print(f"[Job {job_id}] Deleted local input video: {local_video_path}")
+            except OSError as e:
+                print(f"[Job {job_id}] Warning: could not delete input video: {e}")
+
         print(f"[Job {job_id}] All clips generated successfully")
         update_clip_job_status(job_id, "completed", progress=100)
         print(f"[Job {job_id}] Job marked as completed")

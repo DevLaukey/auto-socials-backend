@@ -1,43 +1,44 @@
 import os
 import uuid
+import tempfile
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from pathlib import Path
 
-from app.config import settings
+from app.services.storage import upload_file
 
 router = APIRouter(prefix="/media", tags=["media"])
+
 
 @router.post("/upload")
 async def upload_media(file: UploadFile = File(...)):
     """
-    Upload media file (image or video)
-    Returns the path to the uploaded file
+    Upload media file (image or video) to cloud storage.
+    Returns the public URL — the file is NOT kept on disk.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
 
-    # Ensure upload directory exists
-    upload_dir = Path(settings.UPLOADS_DIR)
-    upload_dir.mkdir(parents=True, exist_ok=True)
-
-    # Generate safe filename
     ext = file.filename.split(".")[-1].lower()
-    allowed_extensions = ['mp4', 'mov', 'avi', 'jpg', 'jpeg', 'png', 'gif', 'webp']
-    
+    allowed_extensions = ["mp4", "mov", "avi", "jpg", "jpeg", "png", "gif", "webp"]
+
     if ext not in allowed_extensions:
         raise HTTPException(status_code=400, detail=f"File type .{ext} not allowed")
-    
-    filename = f"{uuid.uuid4()}.{ext}"
-    file_path = upload_dir / filename
 
-    # Save file
     content = await file.read()
-    file_path.write_bytes(content)
+    size = len(content)
 
-    # Return the public URL path (what the frontend will use)
+    # Write to a temp file so boto3 can read it
+    with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        remote_key = f"uploads/{uuid.uuid4()}.{ext}"
+        public_url = upload_file(tmp_path, remote_key)
+    finally:
+        os.unlink(tmp_path)
+
     return {
-        "filename": filename,
-        "path": f"/media/uploads/{filename}",  # Full URL path for frontend
+        "url": public_url,
         "original_name": file.filename,
-        "size": len(content)
+        "size": size,
     }

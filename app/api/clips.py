@@ -38,14 +38,18 @@ def get_all_jobs(current_user: dict = Depends(get_current_user)):
         # Process clips to ensure video_url is always present
         processed_clips = []
         for clip in clips:
-            file_path = Path(clip["file_path"]).resolve()
-            try:
-                media_root = Path(settings.MEDIA_ROOT).resolve()
-                relative_path = file_path.relative_to(media_root)
-                public_url = f"/media/{relative_path.as_posix()}"
-            except ValueError:
-                public_url = f"/media/clips/{file_path.name}"
-            
+            stored = clip["file_path"]
+            if stored.startswith("http://") or stored.startswith("https://"):
+                public_url = stored
+            else:
+                file_path = Path(stored).resolve()
+                try:
+                    media_root = Path(settings.MEDIA_ROOT).resolve()
+                    relative_path = file_path.relative_to(media_root)
+                    public_url = f"/media/{relative_path.as_posix()}"
+                except ValueError:
+                    public_url = f"/media/clips/{file_path.name}"
+
             processed_clips.append({
                 "clip_id": str(clip["id"]),
                 "video_url": public_url,
@@ -228,14 +232,17 @@ def get_generated_clips(
     results = []
 
     for c in clips:
-        file_path = Path(c["file_path"]).resolve()
-        
-        try:
-            media_root = Path(settings.MEDIA_ROOT).resolve()
-            relative_path = file_path.relative_to(media_root)
-            public_url = f"/media/{relative_path.as_posix()}"
-        except ValueError:
-            public_url = f"/media/clips/{file_path.name}"
+        stored = c["file_path"]
+        if stored.startswith("http://") or stored.startswith("https://"):
+            public_url = stored
+        else:
+            file_path = Path(stored).resolve()
+            try:
+                media_root = Path(settings.MEDIA_ROOT).resolve()
+                relative_path = file_path.relative_to(media_root)
+                public_url = f"/media/{relative_path.as_posix()}"
+            except ValueError:
+                public_url = f"/media/clips/{file_path.name}"
 
         results.append({
             "clip_id": str(c["id"]),

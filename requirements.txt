@@ -33,6 +33,9 @@ google-api-python-client
 # File uploads
 python-multipart
 
+# Cloud storage (Tigris / S3-compatible)
+boto3
+
 # AI clipping
 yt-dlp
 openai>=1.0.0

@@ -64,6 +64,16 @@ class Settings(BaseSettings):
 
     GOOGLE_CLIENT_SECRETS_JSON: dict = {}
 
+    # ------------------
+    # Cloud Storage (Tigris / S3-compatible)
+    # ------------------
+    AWS_ACCESS_KEY_ID: str = ""
+    AWS_SECRET_ACCESS_KEY: str = ""
+    AWS_ENDPOINT_URL_S3: str = "https://fly.storage.tigris.dev"
+    AWS_REGION: str = "auto"
+    BUCKET_NAME: str = ""
+    BUCKET_PUBLIC_URL: str = ""  # e.g. https://<bucket>.fly.storage.tigris.dev
+
     # AI
     OPENAI_API_KEY: str | None = None
     GROQ_API_KEY: str | None = None
