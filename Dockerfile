@@ -5,13 +5,17 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*
+# Install system dependencies including ffmpeg and yt-dlp
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    ffmpeg \
+    yt-dlp \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 
 RUN pip install --upgrade pip
 RUN pip install --default-timeout=900 --no-cache-dir -r requirements.txt
-
 
 COPY . .
 

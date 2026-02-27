@@ -37,3 +37,4 @@ python-multipart
 yt-dlp
 openai>=1.0.0
 groq
+ffmpeg-python

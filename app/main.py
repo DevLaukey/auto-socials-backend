@@ -52,16 +52,7 @@ def create_app() -> FastAPI:
         expose_headers=["*"],
     )
 
-    # =========================================================
-    # STATIC MEDIA (REQUIRED FOR CLIPS)
-    # =========================================================
-    # Mount the entire media root at /media
-    app.mount(
-        "/media",
-        StaticFiles(directory=settings.MEDIA_ROOT),
-        name="media",
-    )
-
+    
     # =========================================================
     # ROUTERS
     # =========================================================
@@ -82,6 +73,17 @@ def create_app() -> FastAPI:
     app.include_router(analytics_router)
     app.include_router(yt_router)
     app.include_router(messages_router)
+
+
+    # =========================================================
+    # STATIC MEDIA (REQUIRED FOR CLIPS)
+    # =========================================================
+    # Mount the entire media root at /media
+    app.mount(
+        "/media",
+        StaticFiles(directory=settings.MEDIA_ROOT),
+        name="media",
+    )
 
     # =========================================================
     # HEALTH CHECK
