@@ -63,6 +63,27 @@ def upload_file(local_path: str, remote_key: str) -> str:
     return f"{endpoint}/{bucket}/{remote_key}"
 
 
+def download_file(remote_key: str, local_path: str) -> str:
+    """
+    Download a file from cloud storage to a local path.
+
+    Args:
+        remote_key: Key (path) inside the bucket, e.g. "uploads/uuid.jpeg".
+        local_path: Absolute path to save the file locally.
+
+    Returns:
+        The local_path where the file was saved.
+    """
+    client = _get_client()
+    try:
+        client.download_file(settings.BUCKET_NAME, remote_key, local_path)
+        logger.info(f"[Storage] Downloaded {remote_key} → {local_path}")
+    except ClientError as e:
+        logger.error(f"[Storage] Download failed: {e}")
+        raise RuntimeError(f"Storage download failed: {e}") from e
+    return local_path
+
+
 def delete_file(remote_key: str) -> None:
     """Delete a file from cloud storage. Silently ignores missing keys."""
     client = _get_client()

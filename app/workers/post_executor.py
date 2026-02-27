@@ -1,6 +1,7 @@
 from pydantic import ValidationError
 import logging
 import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from app.services.auth_database import (
     get_conn as get_auth_conn,
 )
 from app.services.instagram_service import InstagramService
+from app.services.storage import download_file
 from app.services.youtube_service import YouTubeService
 from app.utils.instagram_lock import InstagramAccountLock
 
@@ -50,6 +52,67 @@ RETRY_DELAY_SECONDS = 5
 # =========================
 # Helper function to clean media paths
 # =========================
+
+def _extract_storage_key(url: str) -> str:
+    """
+    Extract the S3 object key from a Tigris/S3 public URL.
+
+    e.g. https://fly.storage.tigris.dev/bucket-name/uploads/uuid.jpeg
+      → uploads/uuid.jpeg
+    """
+    from app.config import settings
+
+    # Try BUCKET_PUBLIC_URL prefix first
+    if settings.BUCKET_PUBLIC_URL:
+        base = settings.BUCKET_PUBLIC_URL.rstrip("/") + "/"
+        if url.startswith(base):
+            return url[len(base):]
+
+    # Fallback: strip endpoint + bucket from URL
+    # URL format: https://fly.storage.tigris.dev/{bucket}/{key}
+    endpoint = settings.AWS_ENDPOINT_URL_S3.rstrip("/")
+    bucket = settings.BUCKET_NAME
+    prefix = f"{endpoint}/{bucket}/"
+    if url.startswith(prefix):
+        return url[len(prefix):]
+
+    raise ValueError(f"Cannot extract storage key from URL: {url}")
+
+
+def _resolve_media_to_local(media_file: str, suffix: str) -> tuple[str, bool]:
+    """
+    Resolve a media_file value (URL or local path) to an absolute local path.
+
+    Returns (local_path, needs_cleanup) where needs_cleanup=True means the
+    caller must delete the file after use.
+    """
+    # Already a local file
+    if not media_file.startswith("http://") and not media_file.startswith("https://"):
+        clean_path = _clean_media_path(media_file)
+        local_path = MEDIA_ROOT / "uploads" / Path(clean_path).name
+        if local_path.exists():
+            return str(local_path), False
+        for alt in [MEDIA_ROOT / clean_path, MEDIA_ROOT / "clips" / Path(clean_path).name, MEDIA_ROOT / Path(clean_path).name]:
+            if alt.exists():
+                return str(alt), False
+        raise FileNotFoundError(f"Local media file not found: {media_file}")
+
+    # It's a cloud storage URL — download via authenticated S3 API
+    try:
+        key = _extract_storage_key(media_file)
+    except ValueError:
+        raise FileNotFoundError(f"Unrecognised media URL: {media_file}")
+
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    tmp.close()
+    try:
+        download_file(key, tmp.name)
+    except Exception as e:
+        os.unlink(tmp.name)
+        raise RuntimeError(f"Failed to download media from storage: {e}") from e
+
+    return tmp.name, True
+
 
 def _clean_media_path(media_path: str) -> str:
     """
@@ -267,41 +330,25 @@ def _post_to_instagram(post, caption, account_id):
         if not relative_media:
             raise FileNotFoundError("Post has no media_file")
 
-        # Clean the media path
-        clean_path = _clean_media_path(relative_media)
-        
-        # The file should be in the uploads directory
-        media_path = MEDIA_ROOT / "uploads" / Path(clean_path).name
+        suffix = Path(relative_media.split("?")[0]).suffix or ".jpg"
+        media_path, needs_cleanup = _resolve_media_to_local(relative_media, suffix)
 
-        if not media_path.exists():
-            # Try alternative paths as fallback
-            alt_paths = [
-                MEDIA_ROOT / clean_path,  # direct path
-                MEDIA_ROOT / "clips" / Path(clean_path).name,  # clips directory
-                MEDIA_ROOT / Path(clean_path).name,  # media root
-            ]
-            
-            found = False
-            for alt_path in alt_paths:
-                if alt_path.exists():
-                    media_path = alt_path
-                    found = True
-                    break
-            
-            if not found:
-                raise FileNotFoundError(
-                    f"Media file not found. Tried: {media_path}, {alt_paths}"
-                )
+        logger.info(f"[INSTAGRAM][ACCOUNT {account_id}] Media resolved → {media_path}")
 
-        logger.info(f"[INSTAGRAM][ACCOUNT {account_id}] Media verified → {media_path}")
-
-        service = InstagramService(account_id)
-        service.execute_post(
-            media_path=str(media_path),
-            caption=caption,
-            post_type=post.get("post_type", "feed"),
-            share_to_feed=post.get("share_to_feed", True),
-        )
+        try:
+            service = InstagramService(account_id)
+            service.execute_post(
+                media_path=media_path,
+                caption=caption,
+                post_type=post.get("post_type", "feed"),
+                share_to_feed=post.get("share_to_feed", True),
+            )
+        finally:
+            if needs_cleanup:
+                try:
+                    os.unlink(media_path)
+                except OSError:
+                    pass
 
         logger.info(f"[INSTAGRAM][ACCOUNT {account_id}] Post successful")
 
@@ -321,33 +368,28 @@ def _post_to_youtube(post, caption, creds):
     if not media_file:
         raise FileNotFoundError("Post has no media_file")
 
-    # Clean the media path
-    clean_path = _clean_media_path(media_file)
-    
-    # Try to find the file
-    media_path = MEDIA_ROOT / "uploads" / Path(clean_path).name
-    
-    if not media_path.exists():
-        # Try alternative paths
-        alt_path = MEDIA_ROOT / clean_path
-        if alt_path.exists():
-            media_path = alt_path
-        else:
-            raise FileNotFoundError(f"Video file not found: {media_path} (tried: {alt_path})")
+    suffix = Path(media_file.split("?")[0]).suffix or ".mp4"
+    media_path, needs_cleanup = _resolve_media_to_local(media_file, suffix)
 
-    logger.info("[YOUTUBE] Media verified")
+    logger.info(f"[YOUTUBE] Media resolved → {media_path}")
 
     service = YouTubeService(credentials=creds)
-
     logger.info("[YOUTUBE] Uploading video")
 
-    result = service.upload_video(
-        video_file=str(media_path),
-        title=post.get("title"),
-        description=caption,
-        tags=post.get("tags"),
-        privacy_status=post.get("privacy_status", "private"),
-    )
+    try:
+        result = service.upload_video(
+            video_file=media_path,
+            title=post.get("title"),
+            description=caption,
+            tags=post.get("tags"),
+            privacy_status=post.get("privacy_status", "private"),
+        )
+    finally:
+        if needs_cleanup:
+            try:
+                os.unlink(media_path)
+            except OSError:
+                pass
 
     video_id = result.get("video_id")
 
