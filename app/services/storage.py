@@ -29,7 +29,7 @@ def _get_client():
 
 def upload_file(local_path: str, remote_key: str) -> str:
     """
-    Upload a local file to cloud storage.
+    Upload a local file to cloud storage with public read access.
 
     Args:
         local_path: Absolute path to the local file.
@@ -46,9 +46,12 @@ def upload_file(local_path: str, remote_key: str) -> str:
             local_path,
             bucket,
             remote_key,
-            ExtraArgs={"ContentType": _content_type(local_path)},
+            ExtraArgs={
+                "ContentType": _content_type(local_path),
+                "ACL": "public-read"  # CRITICAL: Makes the file publicly accessible
+            },
         )
-        logger.info(f"[Storage] Uploaded {local_path} → {remote_key}")
+        logger.info(f"[Storage] Uploaded {local_path} → {remote_key} (public-read)")
     except ClientError as e:
         logger.error(f"[Storage] Upload failed: {e}")
         raise RuntimeError(f"Storage upload failed: {e}") from e
