@@ -835,7 +835,7 @@ def get_accounts_by_post_id(post_id):
     conn = connect()
     c = conn.cursor()
     c.execute("""
-        SELECT
+        SELECT DISTINCT ON (a.id)
             a.id,
             a.platform,
             a.account_username,
@@ -847,6 +847,7 @@ def get_accounts_by_post_id(post_id):
         LEFT JOIN group_accounts ga ON ga.account_id = a.id
         LEFT JOIN groups g ON g.id = ga.group_id
         WHERE pa.post_id = %s
+        ORDER BY a.id
     """, (post_id,))
 
     accounts = []

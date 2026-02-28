@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, BotoCoreError
 
 from app.config import settings
 
@@ -18,6 +18,15 @@ logger = logging.getLogger(__name__)
 
 
 def _get_client():
+    if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY:
+        raise RuntimeError(
+            "Storage credentials are not configured. "
+            "Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in Fly.io secrets."
+        )
+    if not settings.BUCKET_NAME:
+        raise RuntimeError(
+            "BUCKET_NAME is not configured. Set it in Fly.io secrets."
+        )
     return boto3.client(
         "s3",
         endpoint_url=settings.AWS_ENDPOINT_URL_S3,
@@ -46,7 +55,9 @@ def upload_file(local_path: str, remote_key: str) -> str:
             local_path,
             bucket,
             remote_key,
-            ExtraArgs={"ContentType": _content_type(local_path)},
+            ExtraArgs={
+                "ContentType": _content_type(local_path),
+            },
         )
         logger.info(f"[Storage] Uploaded {local_path} → {remote_key}")
     except ClientError as e:
@@ -74,12 +85,16 @@ def download_file(remote_key: str, local_path: str) -> str:
     Returns:
         The local_path where the file was saved.
     """
+    logger.info(f"[Storage] Downloading s3://{settings.BUCKET_NAME}/{remote_key} → {local_path}")
     client = _get_client()
     try:
         client.download_file(settings.BUCKET_NAME, remote_key, local_path)
-        logger.info(f"[Storage] Downloaded {remote_key} → {local_path}")
-    except ClientError as e:
-        logger.error(f"[Storage] Download failed: {e}")
+        logger.info(f"[Storage] Download complete: {remote_key}")
+    except (ClientError, BotoCoreError) as e:
+        logger.error(f"[Storage] Download failed for key '{remote_key}': {e}")
+        raise RuntimeError(f"Storage download failed: {e}") from e
+    except Exception as e:
+        logger.error(f"[Storage] Unexpected download error for key '{remote_key}': {type(e).__name__}: {e}")
         raise RuntimeError(f"Storage download failed: {e}") from e
     return local_path
 
