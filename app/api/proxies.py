@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 
 from app.api.deps import get_current_user
 from app.services.database import (
@@ -23,12 +23,20 @@ router = APIRouter(
 class ProxyCreate(BaseModel):
     proxy_address: str
     proxy_type: str  # http, https, socks5, etc
+    username: Optional[str] = None
+    password: Optional[str] = None
 
 
 class ProxyOut(BaseModel):
     id: int
     proxy_address: str
     proxy_type: str
+    username: Optional[str] = None
+    is_active: bool
+    created_at: Optional[str] = None
+
+
+class ProxyActivate(BaseModel):
     is_active: bool
 
 
@@ -49,7 +57,9 @@ def list_proxies(user=Depends(get_current_user)):
             "id": r[0],
             "proxy_address": r[1],
             "proxy_type": r[2],
+            "username": r[4] if len(r) > 4 else None,
             "is_active": bool(r[3]),
+            "created_at": r[5].isoformat() if len(r) > 5 and r[5] else None,
         }
         for r in rows
     ]
@@ -59,18 +69,21 @@ def list_proxies(user=Depends(get_current_user)):
 def create_proxy(payload: ProxyCreate, user=Depends(get_current_user)):
     """
     Add a proxy owned by the authenticated user.
+    Supports authenticated proxies with username/password.
     """
     user_id = user["id"]
 
     success = add_proxy(
-        payload.proxy_address,
-        payload.proxy_type,
-        user_id,
+        proxy_address=payload.proxy_address,
+        proxy_type=payload.proxy_type,
+        user_id=user_id,
+        username=payload.username,
+        password=payload.password,
     )
     if not success:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Proxy already exists",
+            detail="Proxy already exists or could not be added",
         )
 
     return {"message": "Proxy added successfully"}

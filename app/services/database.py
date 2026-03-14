@@ -117,6 +117,21 @@ def init_db():
         ADD COLUMN IF NOT EXISTS user_id INTEGER;
     """)
 
+    # ✅ ADD UNIQUE CONSTRAINT for group_name per user
+    c.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint 
+                WHERE conname = 'unique_group_name_per_user'
+            ) THEN
+                ALTER TABLE groups
+                ADD CONSTRAINT unique_group_name_per_user 
+                UNIQUE (user_id, group_name);
+            END IF;
+        END $$;
+    """)
+
     # Proxies table
     c.execute("""
         CREATE TABLE IF NOT EXISTS proxies (
@@ -140,7 +155,17 @@ def init_db():
     c.execute("""
         ALTER TABLE proxies
         ADD COLUMN IF NOT EXISTS user_id INTEGER;
-    """)
+    
+        ALTER TABLE app.proxies 
+        ADD COLUMN IF NOT EXISTS username TEXT;
+
+        ALTER TABLE app.proxies 
+        ADD COLUMN IF NOT EXISTS password TEXT;
+
+        CREATE INDEX IF NOT EXISTS idx_proxies_user_active 
+        ON app.proxies (user_id, is_active);
+
+              """)
 
     # Accounts table
     c.execute("""
@@ -907,15 +932,32 @@ def get_groups(user_id: int):
         conn.close()
 
 
-def add_group(group_name):
+def add_group(user_id: int, group_name: str) -> int:
+    """
+    Add a new group for a user.
+    Returns the new group ID.
+    Raises IntegrityError if group name already exists for this user.
+    """
     conn = connect()
     c = conn.cursor()
     try:
-        c.execute("INSERT INTO groups (group_name) VALUES (%s)", (group_name,))
+        c.execute(
+            """
+            INSERT INTO groups (user_id, group_name)
+            VALUES (%s, %s)
+            RETURNING id
+            """,
+            (user_id, group_name),
+        )
+        group_id = c.fetchone()[0]
         conn.commit()
-        return True
-    except psycopg2.IntegrityError:
-        return False
+        return group_id
+    except psycopg2.IntegrityError as e:
+        conn.rollback()
+        # Re-raise with a more specific message
+        if "unique_group_name_per_user" in str(e):
+            raise ValueError(f"Group '{group_name}' already exists")
+        raise
     finally:
         conn.close()
 
@@ -1179,26 +1221,6 @@ def get_posts(user_id):
     conn.close()
     return rows
 
-def get_random_proxy(user_id: int):
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT id, proxy_address, proxy_type
-        FROM proxies
-        WHERE is_active = TRUE
-          AND user_id = %s
-        ORDER BY RANDOM()
-        LIMIT 1
-        """,
-        (user_id,),
-    )
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    return row  # (id, address, type) or None
-
-
 
 def post_with_random_proxy(user_id, account_id, media_path, caption, post_id):
     proxy = get_random_proxy(user_id)
@@ -1231,20 +1253,38 @@ def post_with_random_proxy(user_id, account_id, media_path, caption, post_id):
 
 
 # Proxy operations
-def add_proxy(proxy_address: str, proxy_type: str, user_id: int):
+# Add this function to handle proxy operations with authentication
+
+def add_proxy(proxy_address: str, proxy_type: str, user_id: int, username: str = None, password: str = None):
+    """
+    Add a new proxy for a user, optionally with authentication credentials.
+    """
     conn = connect()
     cur = conn.cursor()
     try:
+        # Check if proxy already exists for this user
         cur.execute(
             """
-            INSERT INTO proxies (proxy_address, proxy_type, user_id)
-            VALUES (%s, %s, %s)
+            SELECT id FROM proxies 
+            WHERE proxy_address = %s AND user_id = %s
             """,
-            (proxy_address, proxy_type, user_id),
+            (proxy_address, user_id),
+        )
+        if cur.fetchone():
+            return False
+
+        # Insert new proxy with optional credentials
+        cur.execute(
+            """
+            INSERT INTO proxies (proxy_address, proxy_type, user_id, username, password, is_active)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (proxy_address, proxy_type, user_id, username, password, True),
         )
         conn.commit()
         return True
-    except Exception:
+    except Exception as e:
+        logger.error(f"Error adding proxy: {e}")
         conn.rollback()
         return False
     finally:
@@ -1253,68 +1293,114 @@ def add_proxy(proxy_address: str, proxy_type: str, user_id: int):
 
 
 def get_all_proxies(user_id: int):
+    """
+    Get all proxies for a user, including authentication credentials.
+    """
     conn = connect()
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT id, proxy_address, proxy_type, is_active
-        FROM proxies
-        WHERE user_id = %s
-        ORDER BY id DESC
-        """,
-        (user_id,),
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
+    try:
+        cur.execute(
+            """
+            SELECT id, proxy_address, proxy_type, is_active, username, created_at
+            FROM proxies
+            WHERE user_id = %s
+            ORDER BY id DESC
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        return rows
+    finally:
+        cur.close()
+        conn.close()
+
+
+def get_proxy_by_id(proxy_id: int, user_id: int):
+    """
+    Get a specific proxy by ID, including credentials.
+    """
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT id, proxy_address, proxy_type, is_active, username, password, created_at
+            FROM proxies
+            WHERE id = %s AND user_id = %s
+            """,
+            (proxy_id, user_id),
+        )
+        row = cur.fetchone()
+        return row
+    finally:
+        cur.close()
+        conn.close()
 
 
 def update_proxy_status(proxy_id: int, is_active: bool, user_id: int):
+    """
+    Update proxy active status.
+    """
     conn = connect()
     cur = conn.cursor()
-    cur.execute(
-        """
-        UPDATE proxies
-        SET is_active = %s
-        WHERE id = %s AND user_id = %s
-        """,
-        (is_active, proxy_id, user_id),
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        cur.execute(
+            """
+            UPDATE proxies
+            SET is_active = %s
+            WHERE id = %s AND user_id = %s
+            """,
+            (is_active, proxy_id, user_id),
+        )
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
 
 
 def delete_proxy(proxy_id: int, user_id: int):
+    """
+    Delete a proxy.
+    """
     conn = connect()
     cur = conn.cursor()
-    cur.execute(
-        """
-        DELETE FROM proxies
-        WHERE id = %s AND user_id = %s
-        """,
-        (proxy_id, user_id),
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        cur.execute(
+            """
+            DELETE FROM proxies
+            WHERE id = %s AND user_id = %s
+            """,
+            (proxy_id, user_id),
+        )
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
 
-def get_proxy_by_id(proxy_id: int, user_id: int):
+
+def get_random_proxy(user_id: int):
+    """
+    Get a random active proxy for a user, including credentials if available.
+    """
     conn = connect()
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT id, proxy_address, proxy_type, is_active
-        FROM proxies
-        WHERE id = %s AND user_id = %s
-        """,
-        (proxy_id, user_id),
-    )
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    return row
+    try:
+        cur.execute(
+            """
+            SELECT id, proxy_address, proxy_type, username, password
+            FROM proxies
+            WHERE is_active = TRUE
+              AND user_id = %s
+            ORDER BY RANDOM()
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+        return row  # (id, address, type, username, password) or None
+    finally:
+        cur.close()
+        conn.close()
 
 def set_user_timezone(user_id, timezone):
     """Set a user's preferred timezone"""
