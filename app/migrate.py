@@ -14,6 +14,40 @@ MAX_RETRIES = 5
 RETRY_DELAY = 3
 
 
+def run_sql_migrations():
+    """Execute migrations.sql against the database."""
+    import os
+    import psycopg2
+
+    sql_path = os.path.join(os.path.dirname(__file__), "..", "migrations.sql")
+    sql_path = os.path.abspath(sql_path)
+
+    if not os.path.exists(sql_path):
+        logger.warning(f"migrations.sql not found at {sql_path}, skipping.")
+        return
+
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        logger.warning("DATABASE_URL not set, skipping migrations.sql")
+        return
+
+    logger.info(f"Running migrations.sql from {sql_path}...")
+    with open(sql_path, "r") as f:
+        sql = f.read()
+
+    conn = psycopg2.connect(database_url)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+        conn.commit()
+        logger.info("migrations.sql executed successfully.")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def run_migrations():
     """Run database migrations with retry logic."""
     for attempt in range(1, MAX_RETRIES + 1):
@@ -34,6 +68,9 @@ def run_migrations():
             logger.info("Initializing main database...")
             init_db()
             logger.info("Main database initialized.")
+
+            logger.info("Running SQL migrations...")
+            run_sql_migrations()
 
             # Create default admin user
             logger.info("Creating default admin user...")

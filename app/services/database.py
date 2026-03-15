@@ -447,6 +447,8 @@ def add_account(user_id, platform, account_username, password):
         c.execute("""
             INSERT INTO accounts (user_id, platform, account_username, password)
             VALUES (%s, %s, %s, %s)
+            ON CONFLICT (user_id, platform, account_username) DO UPDATE
+                SET password = EXCLUDED.password
             RETURNING id
         """, (user_id, platform, account_username, password))
         conn.commit()

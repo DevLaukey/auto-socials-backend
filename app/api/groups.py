@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from app.services.database import get_db
 from app.api.deps import get_current_user
 
@@ -16,9 +16,27 @@ router = APIRouter(
 class GroupCreate(BaseModel):
     group_name: str
 
+    @field_validator("group_name")
+    @classmethod
+    def validate_group_name(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("group_name cannot be empty.")
+        if len(v.strip()) > 100:
+            raise ValueError("group_name cannot exceed 100 characters.")
+        return v.strip()
+
 
 class GroupUpdate(BaseModel):
     group_name: str
+
+    @field_validator("group_name")
+    @classmethod
+    def validate_group_name(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("group_name cannot be empty.")
+        if len(v.strip()) > 100:
+            raise ValueError("group_name cannot exceed 100 characters.")
+        return v.strip()
 
 
 # -------------------------
@@ -57,6 +75,20 @@ def create_group(
     db=Depends(get_db)
 ):
     cursor = db.cursor()
+
+    # Check for duplicate group name under this user
+    cursor.execute(
+        """
+        SELECT 1 FROM groups
+        WHERE group_name = %s AND user_id = %s
+        """,
+        (payload.group_name, user["id"]),
+    )
+    if cursor.fetchone():
+        raise HTTPException(
+            status_code=409,
+            detail=f"You already have a group named '{payload.group_name}'. Please choose a different name.",
+        )
 
     cursor.execute(
         """
@@ -98,7 +130,10 @@ def update_group(
 
     row = cursor.fetchone()
     if not row:
-        raise HTTPException(status_code=404, detail="Group not found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Group with ID {group_id} was not found or you do not have permission to update it.",
+        )
 
     db.commit()
     return {
@@ -126,7 +161,10 @@ def delete_group(
     )
 
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Group not found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Group with ID {group_id} was not found or you do not have permission to delete it.",
+        )
 
     cursor.execute(
         """
@@ -160,7 +198,10 @@ def group_accounts(
     )
 
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Group not found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Group with ID {group_id} was not found or you do not have permission to access it.",
+        )
 
     cursor.execute(
         """
@@ -211,7 +252,10 @@ def add_account_to_group(
         (group_id, user["id"]),
     )
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Group not found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Group with ID {group_id} was not found or you do not have permission to modify it.",
+        )
 
     # Verify account ownership
     cursor.execute(
@@ -223,13 +267,29 @@ def add_account_to_group(
         (account_id, user["id"]),
     )
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Account not found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Social account with ID {account_id} was not found or does not belong to your account.",
+        )
+
+    # Check if account is already in this group
+    cursor.execute(
+        """
+        SELECT 1 FROM group_accounts
+        WHERE group_id = %s AND account_id = %s
+        """,
+        (group_id, account_id),
+    )
+    if cursor.fetchone():
+        raise HTTPException(
+            status_code=409,
+            detail=f"Social account with ID {account_id} is already a member of group {group_id}.",
+        )
 
     cursor.execute(
         """
         INSERT INTO group_accounts (group_id, account_id)
         VALUES (%s, %s)
-        ON CONFLICT (group_id, account_id) DO NOTHING
         """,
         (group_id, account_id),
     )
@@ -258,7 +318,24 @@ def remove_account_from_group(
         (group_id, user["id"]),
     )
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Group not found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Group with ID {group_id} was not found or you do not have permission to modify it.",
+        )
+
+    # Check if the account is actually in this group before deleting
+    cursor.execute(
+        """
+        SELECT 1 FROM group_accounts
+        WHERE group_id = %s AND account_id = %s
+        """,
+        (group_id, account_id),
+    )
+    if not cursor.fetchone():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Social account with ID {account_id} is not a member of group {group_id}.",
+        )
 
     cursor.execute(
         """
