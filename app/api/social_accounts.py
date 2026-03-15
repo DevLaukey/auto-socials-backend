@@ -70,12 +70,15 @@ def connect_social_account(
     user_id = current_user["id"]
 
     # 1️⃣ Create account
-    account_id = add_account(
-        user_id=user_id,
-        platform=payload.platform,
-        account_username=payload.account_username,
-        password=payload.password,
-    )
+    try:
+        account_id = add_account(
+            user_id=user_id,
+            platform=payload.platform,
+            account_username=payload.account_username,
+            password=payload.password,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
     # 2️⃣ Optionally attach to group (ownership enforced)
     if payload.group_id is not None:

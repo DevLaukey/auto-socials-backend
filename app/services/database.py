@@ -447,12 +447,16 @@ def add_account(user_id, platform, account_username, password):
         c.execute("""
             INSERT INTO accounts (user_id, platform, account_username, password)
             VALUES (%s, %s, %s, %s)
-            ON CONFLICT (user_id, platform, account_username) DO UPDATE
-                SET password = EXCLUDED.password
             RETURNING id
         """, (user_id, platform, account_username, password))
         conn.commit()
         return c.fetchone()[0]
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
+        raise ValueError(
+            f"The username '{account_username}' is already connected for {platform}. "
+            "Please use a different account or remove the existing one first."
+        )
     finally:
         conn.close()
 
