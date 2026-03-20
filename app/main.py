@@ -29,6 +29,9 @@ from app.services.database import init_db
 from app.services.auth_database import init_auth_db
 from app.api.messages import router as messages_router
 
+# Import services (not workers - workers are started by Celery)
+from app.services.twitter_token_service import start_token_refresh_scheduler
+
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -101,8 +104,22 @@ def create_app() -> FastAPI:
     # =========================================================
     @app.on_event("startup")
     def startup():
+        # Initialize databases
         init_db()
         init_auth_db()
+        
+        # Start background token refresh scheduler for Twitter
+        if settings.TWITTER_CLIENT_ID and settings.TWITTER_CLIENT_SECRET:
+            import threading
+            refresh_thread = threading.Thread(
+                target=start_token_refresh_scheduler,
+                daemon=True,
+                name="twitter-token-refresh"
+            )
+            refresh_thread.start()
+            print("[STARTUP] Twitter token refresh scheduler started")
+        else:
+            print("[STARTUP] Twitter credentials not configured - skipping token refresh scheduler")
 
     return app
 

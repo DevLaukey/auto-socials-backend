@@ -1,5 +1,16 @@
 from pathlib import Path
 from pydantic_settings import BaseSettings
+from dotenv import load_dotenv
+import os
+import json
+
+# Load .env file explicitly
+env_path = Path(__file__).parent.parent / '.env'
+if env_path.exists():
+    load_dotenv(dotenv_path=env_path)
+    print(f"[CONFIG] Loaded .env from {env_path}")
+else:
+    print(f"[CONFIG] Warning: .env file not found at {env_path}")
 
 # backend/app/config.py
 
@@ -61,8 +72,14 @@ class Settings(BaseSettings):
     # ------------------
     FRONTEND_BASE_URL: str = "http://localhost:3000"
     GOOGLE_CLIENT_SECRETS_FILE: Path = APP_DIR / "client_secret.json"
-
     GOOGLE_CLIENT_SECRETS_JSON: dict = {}
+
+    # ------------------
+    # TWITTER/X OAUTH
+    # ------------------
+    TWITTER_CLIENT_ID: str = ""
+    TWITTER_CLIENT_SECRET: str = ""
+    TWITTER_BEARER_TOKEN: str = ""  # Optional, for app-only auth
 
     # ------------------
     # Cloud Storage (Tigris / S3-compatible)
@@ -74,7 +91,9 @@ class Settings(BaseSettings):
     BUCKET_NAME: str = ""
     BUCKET_PUBLIC_URL: str = ""  # e.g. https://<bucket>.fly.storage.tigris.dev
 
-    # AI
+    # ------------------
+    # AI Providers
+    # ------------------
     OPENAI_API_KEY: str | None = None
     GROQ_API_KEY: str | None = None
 
@@ -84,9 +103,6 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-
-import os
-import json
 
 # ---- Load Google OAuth secrets ----
 # Priority 1: From environment variable (Fly.io)
@@ -106,6 +122,13 @@ elif settings.GOOGLE_CLIENT_SECRETS_FILE.exists():
     except Exception as e:
         print(f"[CONFIG] Failed to load Google secrets file: {e}")
 
+# ---- Validate Twitter OAuth configuration in production ----
+if settings.ENV == "production":
+    if not settings.TWITTER_CLIENT_ID or not settings.TWITTER_CLIENT_SECRET:
+        print("[WARNING] Twitter OAuth credentials not configured. Twitter/X integration will not work.")
+    else:
+        print("[CONFIG] Twitter OAuth credentials loaded")
+
 # ------------------
 # Ensure all dirs exist (again, just to be safe)
 # ------------------
@@ -114,3 +137,9 @@ settings.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 settings.CLIPS_DIR.mkdir(parents=True, exist_ok=True)
 settings.SUBTITLES_DIR.mkdir(parents=True, exist_ok=True)
 settings.VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Debug: Print DATABASE_URL status
+if settings.DATABASE_URL:
+    print(f"[CONFIG] DATABASE_URL is set (starts with: {settings.DATABASE_URL[:20]}...)")
+else:
+    print("[CONFIG] WARNING: DATABASE_URL is not set!")

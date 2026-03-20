@@ -46,6 +46,14 @@ def get_db():
     finally:
         conn.close()
 
+def get_conn():
+    """Get a database connection as a context manager."""
+    conn = connect()
+    try:
+        yield conn
+    finally:
+        conn.close()
+        
 def init_db():
     """Initialize PostgreSQL database with schema"""
     # Use raw connection for init (schema may not exist yet)
@@ -1185,6 +1193,45 @@ def get_posts(user_id):
     rows = c.fetchall()
     conn.close()
     return rows
+
+def save_tweet_id(post_id: int, tweet_id: str):
+    """Save tweet ID to database."""
+    conn = connect()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            UPDATE posts
+            SET tweet_id = %s
+            WHERE id = %s
+        """, (tweet_id, post_id))
+        conn.commit()
+        logger.info(f"Saved tweet ID {tweet_id} for post {post_id}")
+    except Exception as e:
+        logger.error(f"Failed to save tweet ID for post {post_id}: {e}")
+        raise
+    finally:
+        conn.close()
+
+
+def save_tweet_thread_ids(post_id: int, tweet_ids: list):
+    """Save thread tweet IDs to database."""
+    conn = connect()
+    c = conn.cursor()
+    try:
+        import json
+        c.execute("""
+            UPDATE posts
+            SET tweet_id = %s,
+                media_ids = %s
+            WHERE id = %s
+        """, (tweet_ids[0] if tweet_ids else None, json.dumps(tweet_ids), post_id))
+        conn.commit()
+        logger.info(f"Saved thread with {len(tweet_ids)} tweets for post {post_id}")
+    except Exception as e:
+        logger.error(f"Failed to save thread IDs for post {post_id}: {e}")
+        raise
+    finally:
+        conn.close()
 
 def get_random_proxy(user_id: int):
     conn = connect()
