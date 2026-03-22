@@ -125,17 +125,11 @@ def execute_comment_job(self, comment_job_id: int):
 def _post_instagram_comment(account_id, username, password, target_url, comment):
     """Post comment on Instagram."""
     try:
-        from instagrapi import Client
-        
-        client = Client()
-        client.login(username, password)
-        
-        # Extract media ID from URL
-        media_id = client.media_pk_from_url(target_url)
-        
-        # Post comment
-        result = client.media_comment(media_id, comment)
-        logger.info(f"Instagram comment posted: {result}")
+        from app.services.instagram_service import InstagramService
+
+        service = InstagramService(account_id)
+        service.post_comment(target_url, comment)
+        logger.info(f"Instagram comment posted on {target_url}")
         return True
     except Exception as e:
         logger.error(f"Instagram comment failed: {e}")
@@ -146,39 +140,16 @@ def _post_youtube_comment(account_id, target_url, comment):
     """Post comment on YouTube."""
     try:
         from app.services.auth_database import get_valid_youtube_token
-        from googleapiclient.discovery import build
-        from googleapiclient.errors import HttpError
-        
-        video_id = _extract_video_id(target_url)
-        if not video_id:
-            raise ValueError(f"Could not extract video ID from URL: {target_url}")
-        
+        from app.services.youtube_service import YouTubeService
+
         creds = get_valid_youtube_token(account_id)
         if not creds:
             raise ValueError(f"No valid YouTube token for account {account_id}")
-        
-        youtube = build('youtube', 'v3', credentials=creds)
-        
-        request = youtube.commentThreads().insert(
-            part='snippet',
-            body={
-                'snippet': {
-                    'videoId': video_id,
-                    'topLevelComment': {
-                        'snippet': {
-                            'textOriginal': comment
-                        }
-                    }
-                }
-            }
-        )
-        response = request.execute()
-        logger.info(f"YouTube comment posted: {response.get('id')}")
+
+        service = YouTubeService(creds)
+        service.post_comment(target_url, comment)
         return True
-        
-    except HttpError as e:
-        logger.error(f"YouTube API error: {e}")
-        return False
+
     except Exception as e:
         logger.error(f"YouTube comment failed: {e}")
         return False
@@ -210,21 +181,6 @@ def _post_twitter_comment(account_id, target_url, comment):
     except Exception as e:
         logger.error(f"Twitter comment failed: {e}")
         return False
-
-
-def _extract_video_id(url: str) -> str:
-    """Extract YouTube video ID from URL."""
-    patterns = [
-        r'(?:youtube\.com\/watch\?v=)([\w-]+)',
-        r'(?:youtu\.be\/)([\w-]+)',
-        r'(?:youtube\.com\/embed\/)([\w-]+)',
-        r'(?:youtube\.com\/v\/)([\w-]+)'
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-    return url
 
 
 def _extract_tweet_id(url: str) -> str:

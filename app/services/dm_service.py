@@ -47,14 +47,22 @@ class DMService:
                 self.client = InstagramService(self.account_id)
                 self.client.login()
                 logger.info(f"Instagram DM service initialized for account {self.account_id}")
-                
+
             elif self.platform == "twitter":
                 creds = get_twitter_token(self.account_id)
                 if not creds:
                     raise ValueError(f"No Twitter credentials found for account {self.account_id}")
                 self.client = TwitterService(self.account_id, creds)
                 logger.info(f"Twitter DM service initialized for account {self.account_id}")
-                
+
+            elif self.platform == "youtube":
+                # YouTube has no public API for sending DMs to arbitrary users.
+                # Promotional messaging on YouTube should use Community Posts instead.
+                logger.warning(
+                    "YouTube does not support direct messages via API. "
+                    "Use Community Posts for channel-wide promotions."
+                )
+
             else:
                 logger.warning(f"Unsupported platform for DM service: {self.platform}")
                 
@@ -87,10 +95,8 @@ class DMService:
 
         try:
             if self.platform == "instagram":
-                # Get user ID from username
-                user_id = self.client.client.user_id_from_username(recipient)
-                self.client.client.direct_send(message, [user_id])
-                
+                self.client.send_dm(recipient, message)
+
             elif self.platform == "twitter":
                 # Twitter DMs require recipient ID, not username
                 user = self.client.client.get_user(username=recipient)
@@ -100,7 +106,13 @@ class DMService:
                     participant_id=user.data.id,
                     text=message
                 )
-            
+
+            elif self.platform == "youtube":
+                logger.warning(
+                    f"Skipping DM to {recipient}: YouTube does not support direct messages via API."
+                )
+                return False
+
             # Log success and update job status
             if dm_job_id:
                 self._update_job_status(dm_job_id, "sent")

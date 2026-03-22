@@ -9,10 +9,12 @@ LOGIC:
 """
 
 import logging
+import re
 from typing import Union
 
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+from googleapiclient.errors import HttpError
 from google.oauth2.credentials import Credentials
 
 logger = logging.getLogger(__name__)
@@ -106,4 +108,50 @@ class YouTubeService:
             "video_id": video_id,
             "raw_response": response,
         }
+
+    def post_comment(self, video_url: str, comment: str) -> dict:
+        """
+        Post a top-level comment on a YouTube video.
+
+        Accepts full YouTube URLs or bare video IDs.
+        """
+        video_id = self._extract_video_id(video_url)
+
+        try:
+            response = self.youtube.commentThreads().insert(
+                part="snippet",
+                body={
+                    "snippet": {
+                        "videoId": video_id,
+                        "topLevelComment": {
+                            "snippet": {
+                                "textOriginal": comment,
+                            }
+                        },
+                    }
+                },
+            ).execute()
+
+            comment_id = response.get("id")
+            logger.info(f"YouTube comment posted | comment_id={comment_id} video_id={video_id}")
+            return {"comment_id": comment_id, "raw_response": response}
+
+        except HttpError as e:
+            logger.error(f"YouTube API error posting comment: {e}")
+            raise
+
+    @staticmethod
+    def _extract_video_id(url: str) -> str:
+        """Extract video ID from a YouTube URL, or return the value as-is if already an ID."""
+        patterns = [
+            r"(?:youtube\.com/watch\?v=)([\w-]+)",
+            r"(?:youtu\.be/)([\w-]+)",
+            r"(?:youtube\.com/embed/)([\w-]+)",
+            r"(?:youtube\.com/v/)([\w-]+)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+        return url  # assume it's already a bare video ID
 

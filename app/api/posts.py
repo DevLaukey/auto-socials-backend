@@ -221,9 +221,9 @@ def _schedule_ai_comments(
                 account = cur.fetchone()
                 if not account:
                     continue
-                
-                platform = account[0].lower()
-                
+
+                platform = account['platform'].lower()
+
                 # Generate comments
                 context = {
                     "hashtags": post_content.get('hashtags'),
@@ -316,9 +316,9 @@ def _schedule_ai_dms(
             account = cur.fetchone()
             if not account:
                 return []
-            
-            platform = account[0].lower()
-            
+
+            platform = account['platform'].lower()
+
             # Generate message template
             post_content = f"Check out my new post!"
             if settings.get('custom_message'):

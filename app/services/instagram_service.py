@@ -145,6 +145,26 @@ class InstagramService:
                 self.client.video_upload_to_story(media_path)
 
     # -------------------------
+    # Comment
+    # -------------------------
+
+    def post_comment(self, media_url: str, comment: str):
+        """Post a comment on an Instagram post by URL."""
+        self.login()
+        media_id = self.client.media_pk_from_url(media_url)
+        return self.client.media_comment(media_id, comment)
+
+    # -------------------------
+    # Direct Message
+    # -------------------------
+
+    def send_dm(self, username: str, message: str):
+        """Send a direct message to a user by username."""
+        self.login()
+        user_id = self.client.user_id_from_username(username)
+        return self.client.direct_send(message, [user_id])
+
+    # -------------------------
     # Unified executor
     # -------------------------
 

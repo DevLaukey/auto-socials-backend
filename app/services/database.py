@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+import contextlib
 import psycopg2
 import os
 import time
@@ -32,6 +33,7 @@ _db_lock = threading.Lock()
 
 def connect():
     conn = psycopg2.connect(DATABASE_URL)
+    conn.cursor_factory = RealDictCursor
     # Set search_path to app schema for all queries
     with conn.cursor() as cur:
         cur.execute("SET search_path TO app, public;")
@@ -46,6 +48,7 @@ def get_db():
     finally:
         conn.close()
 
+@contextlib.contextmanager
 def get_conn():
     """Get a database connection as a context manager."""
     conn = connect()
