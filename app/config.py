@@ -61,8 +61,23 @@ class Settings(BaseSettings):
     # ------------------
     FRONTEND_BASE_URL: str = "http://localhost:3000"
     GOOGLE_CLIENT_SECRETS_FILE: Path = APP_DIR / "client_secret.json"
-
     GOOGLE_CLIENT_SECRETS_JSON: dict = {}
+
+    # ------------------
+    # TWITTER/X OAUTH
+    # ------------------
+    TWITTER_CLIENT_ID: str = ""
+    TWITTER_CLIENT_SECRET: str = ""
+    TWITTER_BEARER_TOKEN: str = ""  # Optional, for app-only auth
+
+    # ------------------
+    # PAYPAL CONFIGURATION
+    # ------------------
+    PAYPAL_CLIENT_ID: str = ""
+    PAYPAL_CLIENT_SECRET: str = ""
+    PAYPAL_MODE: str = "sandbox"  # sandbox or live
+    PAYPAL_WEBHOOK_ID: str = ""  # For webhook verification
+    PAYPAL_RECEIVER_EMAIL: str = ""  # PayPal email for receiving payments
 
     # ------------------
     # Cloud Storage (Tigris / S3-compatible)
@@ -74,9 +89,20 @@ class Settings(BaseSettings):
     BUCKET_NAME: str = ""
     BUCKET_PUBLIC_URL: str = ""  # e.g. https://<bucket>.fly.storage.tigris.dev
 
-    # AI
+    # ------------------
+    # AI Providers
+    # ------------------
     OPENAI_API_KEY: str | None = None
     GROQ_API_KEY: str | None = None
+
+    # ------------------
+    # PayPal API URL (computed property)
+    # ------------------
+    @property
+    def PAYPAL_API_URL(self) -> str:
+        if self.PAYPAL_MODE == "live":
+            return "https://api.paypal.com"
+        return "https://api.sandbox.paypal.com"
 
     class Config:
         env_file = ".env"
@@ -105,6 +131,22 @@ elif settings.GOOGLE_CLIENT_SECRETS_FILE.exists():
         print(f"[CONFIG] Loaded Google secrets from file: {settings.GOOGLE_CLIENT_SECRETS_FILE}")
     except Exception as e:
         print(f"[CONFIG] Failed to load Google secrets file: {e}")
+
+# ---- Validate Twitter OAuth configuration in production ----
+if settings.ENV == "production":
+    if not settings.TWITTER_CLIENT_ID or not settings.TWITTER_CLIENT_SECRET:
+        print("[WARNING] Twitter OAuth credentials not configured. Twitter/X integration will not work.")
+    else:
+        print("[CONFIG] Twitter OAuth credentials loaded")
+
+# ---- Validate PayPal configuration in production ----
+if settings.ENV == "production":
+    if not settings.PAYPAL_CLIENT_ID or not settings.PAYPAL_CLIENT_SECRET:
+        print("[WARNING] PayPal credentials not configured. PayPal integration will not work.")
+    elif settings.PAYPAL_MODE == "sandbox":
+        print("[CONFIG] PayPal running in SANDBOX mode")
+    else:
+        print("[CONFIG] PayPal running in LIVE mode")
 
 # ------------------
 # Ensure all dirs exist (again, just to be safe)

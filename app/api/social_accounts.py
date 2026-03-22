@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Body
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, ConfigDict
 from typing import Optional, List
 
 from app.api.deps import get_current_user
@@ -21,35 +21,75 @@ SUPPORTED_PLATFORMS = {"instagram", "youtube", "tiktok", "twitter", "facebook"}
 # ---------------- Schemas ----------------
 
 class SocialAccountCreate(BaseModel):
+    model_config = ConfigDict(extra='forbid')  # This will reject extra fields
+    
     platform: str
     account_username: str
     password: str
     group_id: Optional[int] = None
 
-    @field_validator("platform")
+    @field_validator("platform", mode="before")
     @classmethod
-    def validate_platform(cls, v: str) -> str:
-        normalized = v.strip().lower()
+    def validate_platform(cls, v):
+        """Validate and normalize platform field."""
+        # Handle None or non-string values
+        if v is None:
+            raise ValueError("Platform cannot be None")
+        
+        # Convert to string if needed and strip
+        v_str = str(v).strip()
+        
+        # Check if empty
+        if not v_str:
+            raise ValueError("Platform cannot be empty")
+        
+        # Normalize to lowercase
+        normalized = v_str.lower()
+        
+        # Check if supported
         if normalized not in SUPPORTED_PLATFORMS:
+            # Try to find a match ignoring case
+            for supported in SUPPORTED_PLATFORMS:
+                if supported.lower() == normalized:
+                    return supported
+            
+            # If no match found, raise error with supported platforms
             raise ValueError(
-                f"Platform '{v}' is not supported. "
+                f"Platform '{v_str}' is not supported. "
                 f"Supported platforms are: {', '.join(sorted(SUPPORTED_PLATFORMS))}."
             )
+        
         return normalized
 
-    @field_validator("account_username")
+    @field_validator("account_username", mode="before")
     @classmethod
-    def validate_username(cls, v: str) -> str:
-        if not v or not v.strip():
+    def validate_username(cls, v):
+        """Validate username field."""
+        if v is None:
+            raise ValueError("account_username cannot be None")
+        
+        # Convert to string and strip
+        v_str = str(v).strip()
+        
+        if not v_str:
             raise ValueError("account_username cannot be empty.")
-        return v.strip()
+        
+        return v_str
 
-    @field_validator("password")
+    @field_validator("password", mode="before")
     @classmethod
-    def validate_password(cls, v: str) -> str:
-        if not v or len(v) < 6:
+    def validate_password(cls, v):
+        """Validate password field."""
+        if v is None:
+            raise ValueError("Password cannot be None")
+        
+        # Convert to string
+        v_str = str(v)
+        
+        if len(v_str) < 6:
             raise ValueError("Password must be at least 6 characters long.")
-        return v
+        
+        return v_str
 
 
 class SocialAccountResponse(BaseModel):
@@ -68,17 +108,25 @@ def connect_social_account(
     current_user: dict = Depends(get_current_user),
 ):
     user_id = current_user["id"]
+    
+    # Log the incoming payload for debugging (remove in production)
+    print(f"Connecting social account for user {user_id}: platform={payload.platform}, username={payload.account_username}")
 
     # 1️⃣ Create account
     try:
         account_id = add_account(
             user_id=user_id,
-            platform=payload.platform,
+            platform=payload.platform,  # This is already normalized by validator
             account_username=payload.account_username,
             password=payload.password,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create account: {str(e)}"
+        )
 
     # 2️⃣ Optionally attach to group (ownership enforced)
     if payload.group_id is not None:
@@ -87,25 +135,26 @@ def connect_social_account(
         conn = connect()
         cursor = conn.cursor()
 
-        # Verify group belongs to user
-        cursor.execute(
-            """
-            SELECT 1
-            FROM groups
-            WHERE id = %s AND user_id = %s
-            """,
-            (payload.group_id, user_id),
-        )
-
-        if not cursor.fetchone():
-            conn.close()
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Group with ID {payload.group_id} does not exist or does not belong to your account.",
+        try:
+            # Verify group belongs to user
+            cursor.execute(
+                """
+                SELECT 1
+                FROM groups
+                WHERE id = %s AND user_id = %s
+                """,
+                (payload.group_id, user_id),
             )
 
-        add_account_to_group(payload.group_id, account_id)
-        conn.close()
+            if not cursor.fetchone():
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Group with ID {payload.group_id} does not exist or does not belong to your account.",
+                )
+
+            add_account_to_group(payload.group_id, account_id)
+        finally:
+            conn.close()
 
     return {
         "id": account_id,
@@ -114,8 +163,6 @@ def connect_social_account(
         "group_id": payload.group_id,
         "status": "connected",
     }
-
-
 
 
 @router.get("/", response_model=List[SocialAccountResponse])
@@ -146,43 +193,42 @@ def add_account_group_link(
     conn = connect()
     cursor = conn.cursor()
 
-    # Verify account ownership
-    cursor.execute(
-        """
-        SELECT 1
-        FROM accounts
-        WHERE id = %s AND user_id = %s
-        """,
-        (account_id, user_id),
-    )
-    if not cursor.fetchone():
-        conn.close()
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Social account with ID {account_id} does not exist or does not belong to your account.",
+    try:
+        # Verify account ownership
+        cursor.execute(
+            """
+            SELECT 1
+            FROM accounts
+            WHERE id = %s AND user_id = %s
+            """,
+            (account_id, user_id),
         )
+        if not cursor.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Social account with ID {account_id} does not exist or does not belong to your account.",
+            )
 
-    # Verify group ownership
-    cursor.execute(
-        """
-        SELECT 1
-        FROM groups
-        WHERE id = %s AND user_id = %s
-        """,
-        (group_id, user_id),
-    )
-    if not cursor.fetchone():
-        conn.close()
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Group with ID {group_id} does not exist or does not belong to your account.",
+        # Verify group ownership
+        cursor.execute(
+            """
+            SELECT 1
+            FROM groups
+            WHERE id = %s AND user_id = %s
+            """,
+            (group_id, user_id),
         )
+        if not cursor.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Group with ID {group_id} does not exist or does not belong to your account.",
+            )
 
-    add_account_to_group(group_id, account_id)
-    conn.close()
+        add_account_to_group(group_id, account_id)
+    finally:
+        conn.close()
+    
     return {"success": True}
-
-
 
 
 @router.delete("/{account_id}/groups/{group_id}")
@@ -197,42 +243,44 @@ def remove_account_group_link(
     conn = connect()
     cursor = conn.cursor()
 
-    # Verify account ownership
-    cursor.execute(
-        """
-        SELECT 1
-        FROM accounts
-        WHERE id = %s AND user_id = %s
-        """,
-        (account_id, user_id),
-    )
-    if not cursor.fetchone():
-        conn.close()
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Social account with ID {account_id} does not exist or does not belong to your account.",
+    try:
+        # Verify account ownership
+        cursor.execute(
+            """
+            SELECT 1
+            FROM accounts
+            WHERE id = %s AND user_id = %s
+            """,
+            (account_id, user_id),
         )
+        if not cursor.fetchone():
+            conn.close()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Social account with ID {account_id} does not exist or does not belong to your account.",
+            )
 
-    # Verify group ownership
-    cursor.execute(
-        """
-        SELECT 1
-        FROM groups
-        WHERE id = %s AND user_id = %s
-        """,
-        (group_id, user_id),
-    )
-    if not cursor.fetchone():
-        conn.close()
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Group with ID {group_id} does not exist or does not belong to your account.",
+        # Verify group ownership
+        cursor.execute(
+            """
+            SELECT 1
+            FROM groups
+            WHERE id = %s AND user_id = %s
+            """,
+            (group_id, user_id),
         )
+        if not cursor.fetchone():
+            conn.close()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Group with ID {group_id} does not exist or does not belong to your account.",
+            )
 
-    remove_account_from_group(group_id, account_id)
-    conn.close()
+        remove_account_from_group(group_id, account_id)
+    finally:
+        conn.close()
+    
     return {"success": True}
-
 
 
 @router.delete("/{account_id}")

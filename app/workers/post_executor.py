@@ -4,25 +4,29 @@ import os
 import tempfile
 import time
 from pathlib import Path
+from typing import Optional, Dict, Any
 
 from app.services.database import (
     update_post_status,
     get_accounts_by_post_id,
     get_instagram_credentials,
-    save_youtube_video_id, 
-    
+    save_youtube_video_id,
+    save_tweet_id,
+    save_tweet_thread_ids,
 )
 
 
 from app.services.auth_database import (
-    get_valid_youtube_token, 
+    get_valid_youtube_token,
+    get_valid_twitter_token,  # New import
     check_and_consume_limit,
-     require_active_subscription,
+    require_active_subscription,
     get_conn as get_auth_conn,
 )
 from app.services.instagram_service import InstagramService
 from app.services.storage import download_file
 from app.services.youtube_service import YouTubeService
+from app.services.twitter_service import TwitterService  # New import
 from app.utils.instagram_lock import InstagramAccountLock
 
 
@@ -48,6 +52,9 @@ logger.setLevel(logging.INFO)
 
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 5
+
+# Twitter character limit
+TWITTER_CHAR_LIMIT = 280
 
 # =========================
 # Helper function to clean media paths
@@ -136,6 +143,14 @@ def _clean_media_path(media_path: str) -> str:
     
     return media_path
 
+
+def _truncate_for_twitter(text: str, max_length: int = TWITTER_CHAR_LIMIT) -> str:
+    """Truncate text to fit Twitter's character limit."""
+    if len(text) <= max_length:
+        return text
+    return text[:max_length-3] + "..."
+
+
 # =========================
 # Main executor
 # =========================
@@ -157,6 +172,7 @@ def execute_post(post: dict):
     logger.info(f"[EXECUTOR][POST {post_id}] Execution started")
 
     any_success = False
+    platform_results = {}
 
     try:
         update_post_status(post_id, "processing")
@@ -200,6 +216,8 @@ def execute_post(post: dict):
                 )
                 continue
 
+            platform_results[platform] = {"success": 0, "failed": 0, "details": []}
+
             for account in platform_accounts:
                 account_id = account["id"]
 
@@ -209,7 +227,7 @@ def execute_post(post: dict):
 
                 try:
                     if platform == "instagram":
-                        _execute_with_retries(
+                        result = _execute_with_retries(
                             lambda: _post_to_instagram(
                                 post=post,
                                 caption=caption,
@@ -218,6 +236,12 @@ def execute_post(post: dict):
                             MAX_RETRIES,
                             RETRY_DELAY_SECONDS,
                         )
+                        platform_results[platform]["success"] += 1
+                        platform_results[platform]["details"].append({
+                            "account_id": account_id,
+                            "success": True,
+                            "result": result
+                        })
                         any_success = True
 
                     elif platform == "youtube":
@@ -225,7 +249,7 @@ def execute_post(post: dict):
                         if not creds:
                             raise RuntimeError("No valid YouTube credentials")
 
-                        _execute_with_retries(
+                        result = _execute_with_retries(
                             lambda: _post_to_youtube(
                                 post=post,
                                 caption=caption,
@@ -234,6 +258,35 @@ def execute_post(post: dict):
                             MAX_RETRIES,
                             RETRY_DELAY_SECONDS,
                         )
+                        platform_results[platform]["success"] += 1
+                        platform_results[platform]["details"].append({
+                            "account_id": account_id,
+                            "success": True,
+                            "result": result
+                        })
+                        any_success = True
+
+                    elif platform == "twitter":
+                        creds = get_valid_twitter_token(account_id)
+                        if not creds:
+                            raise RuntimeError("No valid Twitter credentials")
+
+                        result = _execute_with_retries(
+                            lambda: _post_to_twitter(
+                                post=post,
+                                caption=caption,
+                                account_id=account_id,
+                                creds=creds,
+                            ),
+                            MAX_RETRIES,
+                            RETRY_DELAY_SECONDS,
+                        )
+                        platform_results[platform]["success"] += 1
+                        platform_results[platform]["details"].append({
+                            "account_id": account_id,
+                            "success": True,
+                            "result": result
+                        })
                         any_success = True
 
                     else:
@@ -241,17 +294,22 @@ def execute_post(post: dict):
                             f"[EXECUTOR][POST {post_id}][ACCOUNT {account_id}] "
                             f"Unsupported platform '{platform}'"
                         )
+                        platform_results[platform]["details"].append({
+                            "account_id": account_id,
+                            "success": False,
+                            "error": f"Unsupported platform: {platform}"
+                        })
 
                 except Exception as account_exc:
                     logger.exception(
                         f"[EXECUTOR][POST {post_id}][ACCOUNT {account_id}][{platform}] FAILED: {account_exc}"
                     )
-
-                    update_post_status(
-                        post_id,
-                        "failed",
-                        error_message=str(account_exc),
-                    )
+                    platform_results[platform]["failed"] += 1
+                    platform_results[platform]["details"].append({
+                        "account_id": account_id,
+                        "success": False,
+                        "error": str(account_exc)
+                    })
 
         if any_success:
             update_post_status(post_id, "posted")
@@ -269,7 +327,7 @@ def execute_post(post: dict):
 
     finally:
         logger.info(f"[EXECUTOR][POST {post_id}] ===============================")
-
+        logger.info(f"[EXECUTOR][POST {post_id}] Results by platform: {platform_results}")
 
 
 # =========================
@@ -285,8 +343,8 @@ def _execute_with_retries(
 
     for attempt in range(1, max_attempts + 1):
         try:
-            func()
-            return  # success → stop
+            result = func()
+            return result  # success → stop
 
         except ValidationError as e:
             # instagrapi bug: upload already succeeded
@@ -294,7 +352,7 @@ def _execute_with_retries(
                 "[EXECUTOR] Instagrapi validation error AFTER upload — treating as success"
             )
             logger.warning(str(e))
-            return 
+            return {"status": "success", "note": "Validation error but likely succeeded"}
 
         except Exception as e:
             last_exception = e
@@ -312,7 +370,7 @@ def _execute_with_retries(
 # Instagram
 # =========================
 
-def _post_to_instagram(post, caption, account_id):
+def _post_to_instagram(post, caption, account_id) -> Dict[str, Any]:
     logger.info(f"[INSTAGRAM][ACCOUNT {account_id}] Acquiring lock")
 
     lock = InstagramAccountLock(account_id)
@@ -343,14 +401,16 @@ def _post_to_instagram(post, caption, account_id):
                 post_type=post.get("post_type", "feed"),
                 share_to_feed=post.get("share_to_feed", True),
             )
+            
+            logger.info(f"[INSTAGRAM][ACCOUNT {account_id}] Post successful")
+            return {"status": "success", "platform": "instagram", "account_id": account_id}
+            
         finally:
             if needs_cleanup:
                 try:
                     os.unlink(media_path)
                 except OSError:
                     pass
-
-        logger.info(f"[INSTAGRAM][ACCOUNT {account_id}] Post successful")
 
     finally:
         lock.release()
@@ -361,7 +421,7 @@ def _post_to_instagram(post, caption, account_id):
 # YouTube
 # =========================
 
-def _post_to_youtube(post, caption, creds):
+def _post_to_youtube(post, caption, creds) -> Dict[str, Any]:
     post_id = post.get("id")
 
     media_file = post.get("media_file")
@@ -400,7 +460,134 @@ def _post_to_youtube(post, caption, creds):
     save_youtube_video_id(post_id, video_id)
 
     logger.info(f"[YOUTUBE] Upload completed | video_id={video_id}")
+    
+    return {
+        "status": "success", 
+        "platform": "youtube", 
+        "video_id": video_id,
+        "account_id": post.get("account_id")
+    }
 
+
+# =========================
+# Twitter/X
+# =========================
+
+def _post_to_twitter(post, caption, account_id, creds) -> Dict[str, Any]:
+    """
+    Post to Twitter/X, supporting:
+    - Standard tweets
+    - Media tweets (images/video)
+    - Threads
+    - Replies
+    - Quote tweets
+    """
+    post_id = post.get("id")
+    
+    logger.info(f"[TWITTER][ACCOUNT {account_id}] Starting Twitter post")
+
+    # Prepare media if any
+    media_paths = []
+    needs_cleanup_list = []
+    
+    media_file = post.get("media_file")
+    if media_file:
+        try:
+            suffix = Path(media_file.split("?")[0]).suffix or ".jpg"
+            media_path, needs_cleanup = _resolve_media_to_local(media_file, suffix)
+            media_paths.append(media_path)
+            if needs_cleanup:
+                needs_cleanup_list.append(media_path)
+            logger.info(f"[TWITTER][ACCOUNT {account_id}] Media resolved → {media_path}")
+        except Exception as e:
+            logger.error(f"[TWITTER][ACCOUNT {account_id}] Failed to resolve media: {e}")
+            # Continue without media if it fails? Or raise? Let's raise for now.
+            raise
+
+    service = TwitterService(account_id, creds)
+    
+    try:
+        # Check if this is a thread
+        is_thread = post.get("is_thread", False)
+        thread_tweets = post.get("thread_tweets", [])
+        
+        if is_thread and thread_tweets and len(thread_tweets) > 1:
+            # Post as a thread
+            logger.info(f"[TWITTER][ACCOUNT {account_id}] Posting thread with {len(thread_tweets)} tweets")
+            
+            # First tweet might have media
+            if media_paths:
+                # For threads, media typically goes with first tweet
+                result = service.post_tweet(
+                    text=_truncate_for_twitter(thread_tweets[0]),
+                    media_paths=media_paths
+                )
+                tweet_ids = [result['tweet_id']]
+                
+                # Remaining tweets in thread (no media)
+                for tweet_text in thread_tweets[1:]:
+                    result = service.post_tweet(
+                        text=_truncate_for_twitter(tweet_text),
+                        reply_to_tweet_id=tweet_ids[-1]
+                    )
+                    tweet_ids.append(result['tweet_id'])
+            else:
+                # No media, post all tweets as replies
+                tweet_ids = service.post_thread([
+                    _truncate_for_twitter(t) for t in thread_tweets
+                ])
+            
+            # Save thread IDs to database
+            save_tweet_thread_ids(post_id, tweet_ids)
+            
+            logger.info(f"[TWITTER][ACCOUNT {account_id}] Thread posted: {tweet_ids}")
+            return {
+                "status": "success",
+                "platform": "twitter",
+                "type": "thread",
+                "tweet_ids": tweet_ids,
+                "account_id": account_id
+            }
+            
+        else:
+            # Single tweet (could be reply or quote)
+            reply_to = post.get("reply_to_tweet_id")
+            quote_tweet = post.get("quote_tweet_id")
+            
+            # Twitter character limit
+            tweet_text = _truncate_for_twitter(caption or post.get("title", ""))
+            
+            result = service.post_tweet(
+                text=tweet_text,
+                media_paths=media_paths if media_paths else None,
+                reply_to_tweet_id=reply_to,
+                quote_tweet_id=quote_tweet
+            )
+            
+            # Save tweet ID to database
+            save_tweet_id(post_id, result['tweet_id'])
+            
+            logger.info(f"[TWITTER][ACCOUNT {account_id}] Tweet posted: {result['tweet_id']}")
+            return {
+                "status": "success",
+                "platform": "twitter",
+                "tweet_id": result['tweet_id'],
+                "account_id": account_id,
+                "media_ids": result.get('media_ids', [])
+            }
+            
+    except Exception as e:
+        logger.error(f"[TWITTER][ACCOUNT {account_id}] Failed to post: {e}")
+        raise
+        
+    finally:
+        # Clean up temporary media files
+        for path in needs_cleanup_list:
+            try:
+                os.unlink(path)
+                logger.debug(f"[TWITTER] Cleaned up temp file: {path}")
+            except OSError as e:
+                logger.warning(f"[TWITTER] Failed to clean up {path}: {e}")
 
 
 # =========================
@@ -417,6 +604,7 @@ def _build_caption(title, description, hashtags):
         parts.append(description)
 
     if hashtags:
+        # Clean and format hashtags
         cleaned = " ".join(
             f"#{tag.strip('#')}"
             for tag in hashtags.replace(",", " ").split()

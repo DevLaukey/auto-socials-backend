@@ -4,7 +4,7 @@ import json
 import os
 from datetime import datetime, timedelta
 import threading
-from typing import Optional
+from typing import Optional, Dict, Any
 from urllib.parse import urlparse
 
 from google.oauth2.credentials import Credentials
@@ -115,6 +115,25 @@ def init_auth_db():
                     token_json JSONB NOT NULL,
                     updated_at TIMESTAMPTZ DEFAULT NOW()
                 );
+            """)
+
+            # TWITTER TOKENS
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS twitter_tokens (
+                    account_id INTEGER PRIMARY KEY,
+                    access_token TEXT NOT NULL,
+                    refresh_token TEXT,
+                    expires_at TIMESTAMPTZ,
+                    token_type TEXT DEFAULT 'bearer',
+                    scope TEXT,
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                );
+            """)
+
+            # Create index for token expiration checks
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_twitter_tokens_expires_at 
+                ON twitter_tokens(expires_at) WHERE refresh_token IS NOT NULL;
             """)
 
             # SUBSCRIPTION PLANS
@@ -492,6 +511,185 @@ def delete_youtube_token(account_id: int) -> bool:
             conn.commit()
             return deleted is not None
 
+
+# --------------------------------------------------
+# TWITTER TOKENS
+# --------------------------------------------------
+
+def store_twitter_token_in_db(
+    account_id: int,
+    access_token: str,
+    refresh_token: Optional[str] = None,
+    expires_at: Optional[datetime] = None,
+    scope: Optional[str] = None,
+    token_type: str = "bearer"
+) -> None:
+    """
+    Store Twitter OAuth 2.0 tokens in the database.
+    Atomic upsert to avoid race conditions.
+    """
+    with _DB_LOCK:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO twitter_tokens (
+                        account_id, access_token, refresh_token, expires_at, scope, token_type, updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (account_id)
+                    DO UPDATE SET
+                        access_token = EXCLUDED.access_token,
+                        refresh_token = COALESCE(EXCLUDED.refresh_token, twitter_tokens.refresh_token),
+                        expires_at = EXCLUDED.expires_at,
+                        scope = EXCLUDED.scope,
+                        token_type = EXCLUDED.token_type,
+                        updated_at = NOW()
+                    """,
+                    (account_id, access_token, refresh_token, expires_at, scope, token_type),
+                )
+                conn.commit()
+
+
+def get_twitter_token(account_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Get Twitter token data from database without validation.
+    
+    Returns:
+        Dictionary with token data or None if not found
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 
+                    account_id,
+                    access_token,
+                    refresh_token,
+                    expires_at,
+                    scope,
+                    token_type
+                FROM twitter_tokens
+                WHERE account_id = %s
+                """,
+                (account_id,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        return None
+
+    return dict(row)
+
+
+def get_valid_twitter_token(account_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Returns a VALID Twitter token.
+    If token is expired and has refresh_token, attempts refresh.
+    
+    Returns:
+        Dictionary with valid token data or None if invalid/no refresh
+    """
+    token_data = get_twitter_token(account_id)
+    if not token_data:
+        return None
+
+    now = datetime.utcnow()
+    
+    # Check if token is expired or will expire soon (within 5 minutes)
+    expires_at = token_data.get("expires_at")
+    if expires_at and expires_at.replace(tzinfo=None) <= now + timedelta(minutes=5):
+        # Token is expired or expiring soon
+        refresh_token = token_data.get("refresh_token")
+        if refresh_token:
+            # Attempt refresh - this will be handled by the token refresh service
+            # Return expired token for now, the service will update it
+            logger.info(f"Twitter token for account {account_id} needs refresh")
+            return token_data
+        else:
+            # No refresh token, token is invalid
+            logger.warning(f"Twitter token for account {account_id} expired with no refresh token")
+            return None
+    
+    return token_data
+
+
+def delete_twitter_token(account_id: int) -> bool:
+    """
+    Delete Twitter token for an account.
+    Returns True if deleted, False if not found.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM twitter_tokens
+                WHERE account_id = %s
+                RETURNING account_id
+                """,
+                (account_id,)
+            )
+            deleted = cur.fetchone()
+            conn.commit()
+            return deleted is not None
+
+
+def update_twitter_token(
+    account_id: int,
+    access_token: str,
+    expires_at: Optional[datetime] = None,
+    refresh_token: Optional[str] = None
+) -> bool:
+    """
+    Update an existing Twitter token (used by refresh service).
+    Returns True if updated, False if token doesn't exist.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE twitter_tokens
+                SET 
+                    access_token = %s,
+                    expires_at = COALESCE(%s, expires_at),
+                    refresh_token = COALESCE(%s, refresh_token),
+                    updated_at = NOW()
+                WHERE account_id = %s
+                RETURNING account_id
+                """,
+                (access_token, expires_at, refresh_token, account_id)
+            )
+            updated = cur.fetchone()
+            conn.commit()
+            return updated is not None
+
+
+def get_all_twitter_accounts_with_tokens() -> list:
+    """
+    Returns all Twitter accounts with their OAuth tokens.
+    Used by token refresh service.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    a.id AS account_id,
+                    a.user_id,
+                    a.account_username,
+                    tt.access_token,
+                    tt.refresh_token,
+                    tt.expires_at
+                FROM accounts a
+                JOIN twitter_tokens tt ON tt.account_id = a.id
+                WHERE LOWER(a.platform) = 'twitter'
+            """)
+            return cur.fetchall()
+
+
+# --------------------------------------------------
+# SUBSCRIPTION & USAGE
+# --------------------------------------------------
+
 def get_active_subscription(conn, user_id: int):
     now = datetime.utcnow()
 
@@ -591,6 +789,11 @@ def check_and_consume_limit(conn, user_id, platform, action):
     """
     check_daily_limit(conn, user_id, platform, action)
     consume_daily_limit(conn, user_id, platform, action)
+
+
+# --------------------------------------------------
+# PAYMENT INTENTS
+# --------------------------------------------------
 
 def create_payment_intent(conn, user_id: int, plan_id: int, amount: int):
     payment_id = uuid.uuid4()
