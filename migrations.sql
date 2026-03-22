@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (id SERIAL PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS post_payment_intents (id UUID PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS youtube_tokens (account_id INTEGER PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS twitter_tokens (account_id INTEGER PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS paypal_webhook_events (id SERIAL PRIMARY KEY);
 
 -- APP SCHEMA TABLES
 SET search_path TO app, public;
@@ -181,6 +182,21 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='payment_intents' AND column_name='zeroid_reference') THEN
         ALTER TABLE payment_intents ADD COLUMN zeroid_reference TEXT UNIQUE;
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='payment_intents' AND column_name='payment_method') THEN
+        ALTER TABLE payment_intents ADD COLUMN payment_method TEXT DEFAULT 'zeroid';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='payment_intents' AND column_name='paypal_order_id') THEN
+        ALTER TABLE payment_intents ADD COLUMN paypal_order_id TEXT UNIQUE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='payment_intents' AND column_name='paypal_payer_id') THEN
+        ALTER TABLE payment_intents ADD COLUMN paypal_payer_id TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='payment_intents' AND column_name='paypal_payment_id') THEN
+        ALTER TABLE payment_intents ADD COLUMN paypal_payment_id TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='payment_intents' AND column_name='paypal_capture_id') THEN
+        ALTER TABLE payment_intents ADD COLUMN paypal_capture_id TEXT;
+    END IF;
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='payment_intents' AND column_name='created_at') THEN
         ALTER TABLE payment_intents ADD COLUMN created_at TIMESTAMPTZ DEFAULT NOW();
     END IF;
@@ -247,6 +263,21 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='post_payment_intents' AND column_name='zeroid_reference') THEN
         ALTER TABLE post_payment_intents ADD COLUMN zeroid_reference TEXT UNIQUE;
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='post_payment_intents' AND column_name='payment_method') THEN
+        ALTER TABLE post_payment_intents ADD COLUMN payment_method TEXT DEFAULT 'zeroid';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='post_payment_intents' AND column_name='paypal_order_id') THEN
+        ALTER TABLE post_payment_intents ADD COLUMN paypal_order_id TEXT UNIQUE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='post_payment_intents' AND column_name='paypal_payer_id') THEN
+        ALTER TABLE post_payment_intents ADD COLUMN paypal_payer_id TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='post_payment_intents' AND column_name='paypal_payment_id') THEN
+        ALTER TABLE post_payment_intents ADD COLUMN paypal_payment_id TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='post_payment_intents' AND column_name='paypal_capture_id') THEN
+        ALTER TABLE post_payment_intents ADD COLUMN paypal_capture_id TEXT;
+    END IF;
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='post_payment_intents' AND column_name='created_at') THEN
         ALTER TABLE post_payment_intents ADD COLUMN created_at TIMESTAMPTZ DEFAULT NOW();
     END IF;
@@ -292,6 +323,38 @@ BEGIN
     END IF;
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='twitter_tokens' AND column_name='updated_at') THEN
         ALTER TABLE twitter_tokens ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW();
+    END IF;
+END $$;
+
+-- paypal_webhook_events table columns
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='paypal_webhook_events' AND column_name='event_id') THEN
+        ALTER TABLE paypal_webhook_events ADD COLUMN event_id TEXT UNIQUE NOT NULL DEFAULT '';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='paypal_webhook_events' AND column_name='event_type') THEN
+        ALTER TABLE paypal_webhook_events ADD COLUMN event_type TEXT NOT NULL DEFAULT '';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='paypal_webhook_events' AND column_name='resource_type') THEN
+        ALTER TABLE paypal_webhook_events ADD COLUMN resource_type TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='paypal_webhook_events' AND column_name='resource_id') THEN
+        ALTER TABLE paypal_webhook_events ADD COLUMN resource_id TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='paypal_webhook_events' AND column_name='resource') THEN
+        ALTER TABLE paypal_webhook_events ADD COLUMN resource JSONB;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='paypal_webhook_events' AND column_name='summary') THEN
+        ALTER TABLE paypal_webhook_events ADD COLUMN summary TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='paypal_webhook_events' AND column_name='created_at') THEN
+        ALTER TABLE paypal_webhook_events ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='paypal_webhook_events' AND column_name='processed') THEN
+        ALTER TABLE paypal_webhook_events ADD COLUMN processed BOOLEAN DEFAULT FALSE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='paypal_webhook_events' AND column_name='processed_at') THEN
+        ALTER TABLE paypal_webhook_events ADD COLUMN processed_at TIMESTAMPTZ;
     END IF;
 END $$;
 
@@ -856,6 +919,11 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='message_read_receipts_message_id_user_id_key') THEN
         ALTER TABLE app.message_read_receipts ADD UNIQUE (message_id, user_id);
     END IF;
+    
+    -- paypal_webhook_events unique constraint
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='paypal_webhook_events_event_id_key') THEN
+        ALTER TABLE auth.paypal_webhook_events ADD CONSTRAINT paypal_webhook_events_event_id_key UNIQUE (event_id);
+    END IF;
 END $$;
 
 -- Add all foreign key constraints
@@ -1110,6 +1178,11 @@ CREATE INDEX IF NOT EXISTS idx_twitter_tokens_expires_at ON auth.twitter_tokens(
 -- Payment indexes
 CREATE INDEX IF NOT EXISTS idx_post_payment_status ON auth.post_payment_intents(status);
 CREATE INDEX IF NOT EXISTS idx_password_reset_token ON auth.password_reset_tokens(token);
+
+-- PayPal indexes
+CREATE INDEX IF NOT EXISTS idx_payment_intents_paypal_order ON auth.payment_intents(paypal_order_id) WHERE paypal_order_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_post_payment_intents_paypal_order ON auth.post_payment_intents(paypal_order_id) WHERE paypal_order_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_paypal_webhook_events_unprocessed ON auth.paypal_webhook_events(created_at) WHERE processed = FALSE;
 
 -- =====================================================
 -- STEP 7: FINAL VERIFICATION

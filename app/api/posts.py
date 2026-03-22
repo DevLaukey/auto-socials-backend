@@ -5,15 +5,16 @@ This layer stores intent and schedules background execution via Celery.
 
 PAYMENT FLOW:
 1. User calls POST /posts/initiate-payment with post data
-2. Backend stores post data and returns ZeroID payment URL
-3. User completes payment on ZeroID
-4. ZeroID webhook confirms payment
+2. Backend stores post data and returns payment URL/order info
+3. User completes payment
+4. Webhook confirms payment
 5. Post is automatically created and scheduled
 
 NEW FEATURES:
 - Twitter/X posting support
 - AI-powered comments automation
 - AI-powered DMs automation
+- PayPal payment support
 """
 
 from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks
@@ -21,6 +22,7 @@ from pydantic import BaseModel, Field, validator
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal, Dict, Any
 import random
+import logging
 
 from app.services.database import (
     add_post,
@@ -43,6 +45,9 @@ from app.workers.post_tasks import execute_scheduled_post
 from app.workers.comment_worker import execute_comment_job
 from app.workers.dm_worker import execute_dm_job
 from app.services.ai_comment_service import AICommentService
+from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # ZeroID payment URL for post payments
 ZEROID_POST_PAYMENT_URL = "https://app.zeroid.cc/paylink/89e8d2c5-be5c-4953-8b2f-43cd0bafcd95"
@@ -123,6 +128,15 @@ class PaymentInitiationResponse(BaseModel):
     payment_id: str
     payment_url: str
     message: str
+
+
+class PaymentMethodResponse(BaseModel):
+    payment_method: str
+    action: str
+    endpoint: Optional[str] = None
+    data: Optional[Dict] = None
+    payment_id: Optional[str] = None
+    payment_url: Optional[str] = None
 
 
 class CommentJobResponse(BaseModel):
@@ -371,7 +385,7 @@ def initiate_post_payment(
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
 ):
-    """Initiate payment for creating a post."""
+    """Initiate payment for creating a post using ZeroID."""
     # Normalize scheduled_time to UTC
     scheduled_time = payload.scheduled_time
     if scheduled_time:
@@ -465,6 +479,233 @@ def initiate_post_payment(
     )
 
 
+@router.post("/initiate-payment/select-method")
+def initiate_post_payment_with_method(
+    payload: PostCreate,
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """
+    Initiate payment for creating a post with selectable payment method.
+    Returns appropriate response based on payment method.
+    """
+    # Normalize scheduled_time to UTC
+    scheduled_time = payload.scheduled_time
+    if scheduled_time:
+        if scheduled_time.tzinfo is None:
+            scheduled_time = scheduled_time.replace(tzinfo=timezone.utc)
+        else:
+            scheduled_time = scheduled_time.astimezone(timezone.utc)
+
+    # Resolve accounts from groups
+    final_account_ids = set(payload.account_ids or [])
+
+    if payload.group_ids:
+        cursor = db.cursor()
+        placeholders = ",".join("%s" for _ in payload.group_ids)
+
+        cursor.execute(
+            f"""
+            SELECT DISTINCT account_id
+            FROM group_accounts
+            WHERE group_id IN ({placeholders})
+            """,
+            tuple(payload.group_ids),
+        )
+
+        final_account_ids.update(row[0] for row in cursor.fetchall())
+
+    final_account_ids = list(final_account_ids)
+
+    if not final_account_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="No accounts resolved for this post",
+        )
+
+    # Check subscription limits for each platform
+    with get_auth_conn() as auth_conn:
+        for account_id in final_account_ids:
+            cursor = db.cursor()
+            cursor.execute(
+                "SELECT platform FROM accounts WHERE id = %s",
+                (account_id,)
+            )
+            platform = cursor.fetchone()[0].lower()
+            
+            try:
+                check_and_consume_limit(
+                    auth_conn,
+                    user_id=current_user["id"],
+                    platform=platform,
+                    action="post"
+                )
+            except PermissionError as e:
+                raise HTTPException(status_code=403, detail=str(e))
+
+    # Store post data for later creation
+    post_data = {
+        "account_ids": final_account_ids,
+        "media_file": payload.media_file,
+        "title": payload.title,
+        "description": payload.description,
+        "hashtags": payload.hashtags,
+        "tags": payload.tags,
+        "privacy_status": payload.privacy_status,
+        "post_type": payload.post_type,
+        "cover_image": payload.cover_image,
+        "audio_name": payload.audio_name,
+        "location": payload.location,
+        "disable_comments": payload.disable_comments,
+        "share_to_feed": payload.share_to_feed,
+        "is_thread": getattr(payload, 'is_thread', False),
+        "thread_tweets": getattr(payload, 'thread_tweets', None),
+        "quote_tweet_id": getattr(payload, 'quote_tweet_id', None),
+        "reply_to_tweet_id": getattr(payload, 'reply_to_tweet_id', None),
+        "scheduled_time": scheduled_time.isoformat() if scheduled_time else None,
+    }
+
+    # Get payment method from payload
+    payment_method = getattr(payload, 'payment_method', 'zeroid').lower()
+    return_url = getattr(payload, 'return_url', None)
+    cancel_url = getattr(payload, 'cancel_url', None)
+
+    if payment_method == "zeroid":
+        # Create payment intent
+        with get_auth_conn() as auth_conn:
+            payment_id = create_post_payment_intent(
+                auth_conn,
+                user_id=current_user["id"],
+                post_data=post_data,
+                amount=100,
+            )
+
+        return PaymentMethodResponse(
+            payment_method="zeroid",
+            action="redirect",
+            payment_id=str(payment_id),
+            payment_url=f"{ZEROID_POST_PAYMENT_URL}?reference={payment_id}",
+        )
+
+    elif payment_method == "paypal":
+        # Return PayPal order creation info
+        return PaymentMethodResponse(
+            payment_method="paypal",
+            action="create_paypal_order",
+            endpoint="/paypal/create-post-order",
+            data={
+                "post_data": post_data,
+                "return_url": return_url,
+                "cancel_url": cancel_url
+            }
+        )
+
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported payment method: {payment_method}"
+        )
+
+
+@router.post("/initiate-payment/paypal")
+def initiate_post_payment_paypal(
+    payload: PostCreate,
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """
+    Initiate PayPal payment for creating a post.
+    Returns PayPal order creation info.
+    """
+    # Normalize scheduled_time to UTC
+    scheduled_time = payload.scheduled_time
+    if scheduled_time:
+        if scheduled_time.tzinfo is None:
+            scheduled_time = scheduled_time.replace(tzinfo=timezone.utc)
+        else:
+            scheduled_time = scheduled_time.astimezone(timezone.utc)
+
+    # Resolve accounts from groups
+    final_account_ids = set(payload.account_ids or [])
+
+    if payload.group_ids:
+        cursor = db.cursor()
+        placeholders = ",".join("%s" for _ in payload.group_ids)
+
+        cursor.execute(
+            f"""
+            SELECT DISTINCT account_id
+            FROM group_accounts
+            WHERE group_id IN ({placeholders})
+            """,
+            tuple(payload.group_ids),
+        )
+
+        final_account_ids.update(row[0] for row in cursor.fetchall())
+
+    final_account_ids = list(final_account_ids)
+
+    if not final_account_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="No accounts resolved for this post",
+        )
+
+    # Check subscription limits for each platform
+    with get_auth_conn() as auth_conn:
+        for account_id in final_account_ids:
+            cursor = db.cursor()
+            cursor.execute(
+                "SELECT platform FROM accounts WHERE id = %s",
+                (account_id,)
+            )
+            platform = cursor.fetchone()[0].lower()
+            
+            try:
+                check_and_consume_limit(
+                    auth_conn,
+                    user_id=current_user["id"],
+                    platform=platform,
+                    action="post"
+                )
+            except PermissionError as e:
+                raise HTTPException(status_code=403, detail=str(e))
+
+    # Store post data for later creation
+    post_data = {
+        "account_ids": final_account_ids,
+        "media_file": payload.media_file,
+        "title": payload.title,
+        "description": payload.description,
+        "hashtags": payload.hashtags,
+        "tags": payload.tags,
+        "privacy_status": payload.privacy_status,
+        "post_type": payload.post_type,
+        "cover_image": payload.cover_image,
+        "audio_name": payload.audio_name,
+        "location": payload.location,
+        "disable_comments": payload.disable_comments,
+        "share_to_feed": payload.share_to_feed,
+        "is_thread": getattr(payload, 'is_thread', False),
+        "thread_tweets": getattr(payload, 'thread_tweets', None),
+        "quote_tweet_id": getattr(payload, 'quote_tweet_id', None),
+        "reply_to_tweet_id": getattr(payload, 'reply_to_tweet_id', None),
+        "scheduled_time": scheduled_time.isoformat() if scheduled_time else None,
+    }
+
+    # Return PayPal order creation info for frontend
+    return PaymentMethodResponse(
+        payment_method="paypal",
+        action="create_paypal_order",
+        endpoint="/paypal/create-post-order",
+        data={
+            "post_data": post_data,
+            "return_url": getattr(payload, 'return_url', None),
+            "cancel_url": getattr(payload, 'cancel_url', None)
+        }
+    )
+
+
 @router.get("/payment-status/{payment_id}")
 def check_payment_status(
     payment_id: str,
@@ -483,6 +724,7 @@ def check_payment_status(
         "payment_id": str(payment["id"]),
         "status": payment["status"],
         "is_paid": payment["status"] == "paid",
+        "payment_method": payment.get("payment_method", "zeroid"),
         "created_at": payment["created_at"],
         "updated_at": payment["updated_at"],
     }
@@ -501,6 +743,7 @@ def list_my_post_payments(
             "payment_id": str(p["id"]),
             "status": p["status"],
             "is_paid": p["status"] == "paid",
+            "payment_method": p.get("payment_method", "zeroid"),
             "amount": p["amount"],
             "currency": p["currency"],
             "created_at": p["created_at"],
@@ -508,6 +751,38 @@ def list_my_post_payments(
         }
         for p in payments
     ]
+
+
+@router.get("/payment-methods")
+def get_post_payment_methods():
+    """
+    Get available payment methods for post creation.
+    """
+    methods = [
+        {
+            "id": "zeroid",
+            "name": "ZeroID",
+            "description": "Pay with ZeroID",
+            "icon": "https://app.zeroid.cc/favicon.ico",
+            "enabled": True,
+            "amount": 100,
+            "currency": "KES"
+        }
+    ]
+    
+    # Add PayPal if configured
+    if settings.PAYPAL_CLIENT_ID and settings.PAYPAL_CLIENT_SECRET:
+        methods.append({
+            "id": "paypal",
+            "name": "PayPal",
+            "description": "Pay with PayPal account or credit card",
+            "icon": "https://www.paypal.com/favicon.ico",
+            "enabled": True,
+            "amount": 1.00,
+            "currency": "USD"
+        })
+
+    return {"payment_methods": methods}
 
 
 # ======================

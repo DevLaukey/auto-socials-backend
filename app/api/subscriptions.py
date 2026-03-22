@@ -1,9 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel
 import datetime
+import logging
 
 from app.api.deps import get_current_user, require_admin
 from app.services.auth_database import get_conn, create_payment_intent
+from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/subscriptions", tags=["subscriptions"])
 
@@ -34,6 +38,19 @@ class UpdateSubscriptionPlan(BaseModel):
     dms_per_day: int | None = None
     price: int | None = None
     duration_days: int | None = None
+
+
+class PayPalSubscribeRequest(BaseModel):
+    plan_id: int
+    return_url: str | None = None
+    cancel_url: str | None = None
+
+
+class PayPalSubscribeResponse(BaseModel):
+    payment_method: str
+    action: str
+    endpoint: str
+    data: dict
 
 
 # -----------------------------
@@ -74,9 +91,6 @@ def get_subscription_plans():
     return plans
 
 
-
-
-
 # -----------------------------
 # SUBSCRIBE USER TO PLAN
 # -----------------------------
@@ -86,6 +100,9 @@ def subscribe(
     payload: dict,
     current_user: dict = Depends(get_current_user),
 ):
+    """
+    Subscribe to a plan using ZeroID (default payment method).
+    """
     plan_id = payload.get("plan_id")
 
     if not plan_id:
@@ -121,6 +138,123 @@ def subscribe(
         "payment_id": str(payment_id),
         "payment_url": "https://app.zeroid.cc/paylink/89e8d2c5-be5c-4953-8b2f-43cd0bafcd95"
     }
+
+
+@router.post("/subscribe/paypal")
+def subscribe_paypal(
+    payload: PayPalSubscribeRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Subscribe to a plan using PayPal.
+    Returns PayPal order creation endpoint info.
+    """
+    plan_id = payload.plan_id
+
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="Missing plan_id")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT price FROM subscription_plans WHERE id = %s",
+                (plan_id,),
+            )
+            plan = cur.fetchone()
+
+            if not plan:
+                raise HTTPException(status_code=404, detail="Invalid plan")
+
+            amount = plan["price"]
+
+            if amount <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Plan price is not configured"
+                )
+
+    # Return PayPal order creation info for frontend
+    return PayPalSubscribeResponse(
+        payment_method="paypal",
+        action="create_paypal_order",
+        endpoint="/paypal/create-subscription-order",
+        data={
+            "plan_id": plan_id,
+            "return_url": payload.return_url,
+            "cancel_url": payload.cancel_url
+        }
+    )
+
+
+@router.post("/subscribe/select-method")
+def subscribe_with_method(
+    payload: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Subscribe to a plan with a specified payment method.
+    Returns appropriate response based on payment method.
+    """
+    plan_id = payload.get("plan_id")
+    payment_method = payload.get("payment_method", "zeroid").lower()
+
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="Missing plan_id")
+
+    # Validate plan exists
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT price, name FROM subscription_plans WHERE id = %s",
+                (plan_id,),
+            )
+            plan = cur.fetchone()
+
+            if not plan:
+                raise HTTPException(status_code=404, detail="Invalid plan")
+
+            amount = plan["price"]
+            plan_name = plan["name"]
+
+    # Handle different payment methods
+    if payment_method == "zeroid":
+        payment_id = create_payment_intent(
+            conn,
+            user_id=current_user["id"],
+            plan_id=plan_id,
+            amount=amount,
+        )
+        return {
+            "payment_method": "zeroid",
+            "payment_id": str(payment_id),
+            "payment_url": "https://app.zeroid.cc/paylink/89e8d2c5-be5c-4953-8b2f-43cd0bafcd95",
+            "action": "redirect"
+        }
+
+    elif payment_method == "paypal":
+        return PayPalSubscribeResponse(
+            payment_method="paypal",
+            action="create_paypal_order",
+            endpoint="/paypal/create-subscription-order",
+            data={
+                "plan_id": plan_id,
+                "plan_name": plan_name,
+                "amount": amount,
+                "return_url": payload.get("return_url"),
+                "cancel_url": payload.get("cancel_url")
+            }
+        )
+
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported payment method: {payment_method}"
+        )
+
+
+# -----------------------------
+# PLAN MANAGEMENT (ADMIN)
+# -----------------------------
 
 @router.get("/plans/{plan_id}")
 def get_subscription_plan(plan_id: int):
@@ -168,6 +302,8 @@ def create_subscription_plan(
             row = cur.fetchone()
         conn.commit()
 
+    logger.info(f"Admin {admin['id']} created subscription plan: {payload.name}")
+
     return {"status": "created", "plan_id": row["id"]}
 
 
@@ -207,6 +343,8 @@ def update_subscription_plan(
     if not row:
         raise HTTPException(status_code=404, detail="Plan not found")
 
+    logger.info(f"Admin {admin['id']} updated subscription plan {plan_id}")
+
     return {"status": "updated", "plan_id": plan_id}
 
 
@@ -244,9 +382,50 @@ def delete_subscription_plan(
     if not row:
         raise HTTPException(status_code=404, detail="Plan not found")
 
+    logger.info(f"Admin {admin['id']} deleted subscription plan {plan_id}")
+
     return {"status": "deleted", "plan_id": plan_id}
 
 
+# -----------------------------
+# PAYMENT METHODS
+# -----------------------------
+
+@router.get("/payment-methods")
+def get_payment_methods():
+    """
+    Get available payment methods for subscriptions.
+    """
+    methods = [
+        {
+            "id": "zeroid",
+            "name": "ZeroID",
+            "description": "Pay with ZeroID",
+            "icon": "https://app.zeroid.cc/favicon.ico",
+            "enabled": True
+        },
+        {
+            "id": "paypal",
+            "name": "PayPal",
+            "description": "Pay with PayPal account or credit card",
+            "icon": "https://www.paypal.com/favicon.ico",
+            "enabled": bool(settings.PAYPAL_CLIENT_ID and settings.PAYPAL_CLIENT_SECRET)
+        }
+    ]
+
+    return {"payment_methods": methods}
 
 
+# -----------------------------
+# WEBHOOK HANDLERS (if needed)
+# -----------------------------
 
+@router.post("/webhook/zeroid")
+async def zeroid_webhook(request: Request):
+    """
+    Handle ZeroID payment webhook.
+    This is a passthrough to the main payments webhook.
+    """
+    # Forward to the payments webhook
+    from app.api.payments import zeroid_webhook as handle_zeroid
+    return await handle_zeroid(request)

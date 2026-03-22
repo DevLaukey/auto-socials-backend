@@ -1,16 +1,5 @@
 from pathlib import Path
 from pydantic_settings import BaseSettings
-from dotenv import load_dotenv
-import os
-import json
-
-# Load .env file explicitly
-env_path = Path(__file__).parent.parent / '.env'
-if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
-    print(f"[CONFIG] Loaded .env from {env_path}")
-else:
-    print(f"[CONFIG] Warning: .env file not found at {env_path}")
 
 # backend/app/config.py
 
@@ -82,6 +71,15 @@ class Settings(BaseSettings):
     TWITTER_BEARER_TOKEN: str = ""  # Optional, for app-only auth
 
     # ------------------
+    # PAYPAL CONFIGURATION
+    # ------------------
+    PAYPAL_CLIENT_ID: str = ""
+    PAYPAL_CLIENT_SECRET: str = ""
+    PAYPAL_MODE: str = "sandbox"  # sandbox or live
+    PAYPAL_WEBHOOK_ID: str = ""  # For webhook verification
+    PAYPAL_RECEIVER_EMAIL: str = ""  # PayPal email for receiving payments
+
+    # ------------------
     # Cloud Storage (Tigris / S3-compatible)
     # ------------------
     AWS_ACCESS_KEY_ID: str = ""
@@ -97,12 +95,24 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str | None = None
     GROQ_API_KEY: str | None = None
 
+    # ------------------
+    # PayPal API URL (computed property)
+    # ------------------
+    @property
+    def PAYPAL_API_URL(self) -> str:
+        if self.PAYPAL_MODE == "live":
+            return "https://api.paypal.com"
+        return "https://api.sandbox.paypal.com"
+
     class Config:
         env_file = ".env"
         case_sensitive = True
 
 
 settings = Settings()
+
+import os
+import json
 
 # ---- Load Google OAuth secrets ----
 # Priority 1: From environment variable (Fly.io)
@@ -129,6 +139,15 @@ if settings.ENV == "production":
     else:
         print("[CONFIG] Twitter OAuth credentials loaded")
 
+# ---- Validate PayPal configuration in production ----
+if settings.ENV == "production":
+    if not settings.PAYPAL_CLIENT_ID or not settings.PAYPAL_CLIENT_SECRET:
+        print("[WARNING] PayPal credentials not configured. PayPal integration will not work.")
+    elif settings.PAYPAL_MODE == "sandbox":
+        print("[CONFIG] PayPal running in SANDBOX mode")
+    else:
+        print("[CONFIG] PayPal running in LIVE mode")
+
 # ------------------
 # Ensure all dirs exist (again, just to be safe)
 # ------------------
@@ -137,9 +156,3 @@ settings.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 settings.CLIPS_DIR.mkdir(parents=True, exist_ok=True)
 settings.SUBTITLES_DIR.mkdir(parents=True, exist_ok=True)
 settings.VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
-
-# Debug: Print DATABASE_URL status
-if settings.DATABASE_URL:
-    print(f"[CONFIG] DATABASE_URL is set (starts with: {settings.DATABASE_URL[:20]}...)")
-else:
-    print("[CONFIG] WARNING: DATABASE_URL is not set!")

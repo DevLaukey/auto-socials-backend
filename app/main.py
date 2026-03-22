@@ -32,6 +32,8 @@ from app.api.messages import router as messages_router
 # Import services (not workers - workers are started by Celery)
 from app.services.twitter_token_service import start_token_refresh_scheduler
 
+from app.api.paypal import router as paypal_router
+
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -76,6 +78,7 @@ def create_app() -> FastAPI:
     app.include_router(analytics_router)
     app.include_router(yt_router)
     app.include_router(messages_router)
+    app.include_router(paypal_router)
 
 
     # =========================================================
