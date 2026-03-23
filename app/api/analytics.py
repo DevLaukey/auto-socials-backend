@@ -167,19 +167,19 @@ def get_comment_analytics(
         },
         "platform_breakdown": [
             {
-                "platform": row[0],
-                "total": row[1],
-                "completed": row[2],
-                "success_rate": round((row[2] / row[1] * 100) if row[1] > 0 else 0, 2),
-                "avg_delay_minutes": round((row[3] / 60) if row[3] else 0, 1)
+                "platform": row["platform"],
+                "total": row["total"],
+                "completed": row["completed"],
+                "success_rate": round((row["completed"] / row["total"] * 100) if row["total"] > 0 else 0, 2),
+                "avg_delay_minutes": round((row["avg_delay"] / 60) if row["avg_delay"] else 0, 1)
             }
             for row in platform_breakdown
         ],
         "daily_activity": [
             {
-                "date": row[0].isoformat() if row[0] else None,
-                "total": row[1],
-                "successful": row[2]
+                "date": row["date"].isoformat() if row["date"] else None,
+                "total": row["total"],
+                "successful": row["successful"]
             }
             for row in daily_activity
         ]
@@ -496,15 +496,15 @@ def get_twitter_metrics(user_id: int, days: int = 30) -> dict:
         },
         "top_tweets": [
             {
-                "id": row[0],
-                "title": row[1][:50] + "..." if row[1] and len(row[1]) > 50 else row[1],
-                "created_at": row[2].isoformat() if row[2] else None,
-                "likes": row[3] or 0,
-                "retweets": row[4] or 0,
-                "replies": row[5] or 0,
-                "impressions": row[6] or 0,
-                "account": row[7],
-                "total_score": (row[3] or 0) + (row[4] or 0) * 2 + (row[5] or 0) * 1.5
+                "id": row["id"],
+                "title": row["title"][:50] + "..." if row["title"] and len(row["title"]) > 50 else row["title"],
+                "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                "likes": row["likes"] or 0,
+                "retweets": row["retweets"] or 0,
+                "replies": row["replies"] or 0,
+                "impressions": row["impressions"] or 0,
+                "account": row["account_username"],
+                "total_score": (row["likes"] or 0) + (row["retweets"] or 0) * 2 + (row["replies"] or 0) * 1.5
             }
             for row in top_tweets
         ]
@@ -581,13 +581,13 @@ def get_conversation_stats(user_id: int, days: int = 30) -> dict:
         },
         "top_conversations": [
             {
-                "conversation_id": row[0],
-                "recipient": row[1],
-                "message_count": row[2],
-                "last_message": row[3].isoformat() if row[3] else None,
-                "our_messages": row[4],
-                "ai_messages": row[5],
-                "ai_percentage": round((row[5] / row[2] * 100) if row[2] > 0 else 0, 2)
+                "conversation_id": row["id"],
+                "recipient": row["recipient_username"],
+                "message_count": row["message_count"],
+                "last_message": row["last_message"].isoformat() if row["last_message"] else None,
+                "our_messages": row["our_messages"],
+                "ai_messages": row["ai_messages"],
+                "ai_percentage": round((row["ai_messages"] / row["message_count"] * 100) if row["message_count"] > 0 else 0, 2)
             }
             for row in top_conversations
         ]
@@ -648,12 +648,12 @@ def get_engagement_trends(user_id: int, days: int = 30) -> dict:
     return {
         "daily": [
             {
-                "date": row[0].isoformat(),
-                "posts": row[1],
-                "comments": row[2],
-                "dms": row[3],
-                "conversation_messages": row[4],
-                "total_activity": row[1] + row[2] + row[3] + row[4]
+                "date": row["date"].isoformat(),
+                "posts": row["posts"],
+                "comments": row["comments"],
+                "dms": row["dms"],
+                "conversation_messages": row["conversation_messages"],
+                "total_activity": row["posts"] + row["comments"] + row["dms"] + row["conversation_messages"]
             }
             for row in trends
         ]

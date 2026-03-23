@@ -64,7 +64,7 @@ def is_user_admin(conn, user_id: int) -> bool:
         SELECT is_admin FROM auth.users WHERE id = %s
     """, (user_id,))
     result = cur.fetchone()
-    return result and result[0] is True
+    return result and result["is_admin"] is True
 
 def get_all_admins(conn, current_user_id: int) -> List[dict]:
     """Get all admin users for regular users to choose from"""
@@ -83,7 +83,7 @@ def get_all_admins(conn, current_user_id: int) -> List[dict]:
     
     rows = cur.fetchall()
     return [
-        {"id": row[0], "email": row[1], "username": row[2], "is_admin": row[3]}
+        {"id": row["id"], "email": row["email"], "username": row["username"], "is_admin": row["is_admin"]}
         for row in rows
     ]
 
@@ -91,7 +91,7 @@ def get_all_non_admin_users(conn, admin_id: int) -> List[dict]:
     """Get all non-admin users for admin to choose from"""
     cur = conn.cursor()
     cur.execute("""
-        SELECT 
+        SELECT
             id,
             email,
             email as username,
@@ -100,10 +100,10 @@ def get_all_non_admin_users(conn, admin_id: int) -> List[dict]:
         WHERE is_admin = FALSE
         ORDER BY email
     """)
-    
+
     rows = cur.fetchall()
     return [
-        {"id": row[0], "email": row[1], "username": row[2], "is_admin": row[3]}
+        {"id": row["id"], "email": row["email"], "username": row["username"], "is_admin": row["is_admin"]}
         for row in rows
     ]
 
@@ -131,17 +131,17 @@ def create_conversation(conn, participant_ids: List[int], title: Optional[str] =
         
         existing = cur.fetchone()
         if existing:
-            print(f"Found existing conversation {existing[0]} between users {participant_ids}")
-            return existing[0]
-    
+            print(f"Found existing conversation {existing['id']} between users {participant_ids}")
+            return existing["id"]
+
     # Create new conversation if none exists
     cur.execute("""
         INSERT INTO conversations (title, created_at, is_broadcast)
         VALUES (%s, NOW(), %s)
         RETURNING id
     """, (title, is_broadcast))
-    
-    conversation_id = cur.fetchone()[0]
+
+    conversation_id = cur.fetchone()["id"]
     
     # Add participants
     for user_id in participant_ids:
@@ -224,7 +224,7 @@ def get_user_conversations(conn, user_id: int, is_admin: bool = False) -> List[d
     for row in rows:
         # Get participants for this conversation
         cur.execute("""
-            SELECT 
+            SELECT
                 u.id,
                 u.email,
                 u.email as username,
@@ -232,32 +232,32 @@ def get_user_conversations(conn, user_id: int, is_admin: bool = False) -> List[d
             FROM auth.users u
             JOIN conversation_participants cp ON u.id = cp.user_id
             WHERE cp.conversation_id = %s
-        """, (row[0],))
-        
+        """, (row["id"],))
+
         participants = [
             {
-                "id": p[0], 
-                "email": p[1], 
-                "username": p[2],
-                "is_admin": p[3]
+                "id": p["id"],
+                "email": p["email"],
+                "username": p["username"],
+                "is_admin": p["is_admin"]
             }
             for p in cur.fetchall()
         ]
-        
+
         # Format the conversation
         conversation = {
-            "id": row[0],
-            "title": row[1],
-            "created_at": row[2].isoformat() if isinstance(row[2], datetime) else row[2],
-            "last_message_at": row[3].isoformat() if isinstance(row[3], datetime) else row[3],
-            "is_broadcast": row[4],
-            "unread_count": row[5] or 0,
-            "last_message": row[6],
+            "id": row["id"],
+            "title": row["title"],
+            "created_at": row["created_at"].isoformat() if isinstance(row["created_at"], datetime) else row["created_at"],
+            "last_message_at": row["last_message_at"].isoformat() if isinstance(row["last_message_at"], datetime) else row["last_message_at"],
+            "is_broadcast": row["is_broadcast"],
+            "unread_count": row["unread_count"] or 0,
+            "last_message": row["last_message"],
             "participants": participants
         }
-        
+
         # Use email as title for better identification
-        if not row[4]:  # if not broadcast
+        if not row["is_broadcast"]:  # if not broadcast
             other_participants = [p for p in participants if p["id"] != user_id]
             if other_participants:
                 conversation["title"] = other_participants[0]["email"]
@@ -299,17 +299,17 @@ def get_conversation_messages(conn, conversation_id: int, user_id: int, limit: i
     messages = []
     
     for row in rows:
-        created_at = row[4]
+        created_at = row["created_at"]
         if isinstance(created_at, datetime):
             created_at = created_at.isoformat()
-            
+
         messages.append({
-            "id": row[0],
-            "conversation_id": row[1],
-            "sender_id": row[2],
-            "content": row[3],
+            "id": row["id"],
+            "conversation_id": row["conversation_id"],
+            "sender_id": row["sender_id"],
+            "content": row["content"],
             "created_at": created_at,
-            "is_read": row[5]
+            "is_read": row["is_read"]
         })
     
     return messages
@@ -335,16 +335,16 @@ def send_message(conn, conversation_id: int, sender_id: int, content: str) -> di
     """, (conversation_id, sender_id, content))
     
     message = cur.fetchone()
-    
+
     # Update conversation's last_message_at
     cur.execute("""
         UPDATE conversations
         SET last_message_at = NOW()
         WHERE id = %s
     """, (conversation_id,))
-    
+
     conn.commit()
-    
+
     # Get sender info
     cur.execute("""
         SELECT email, email as username, is_admin
@@ -352,24 +352,24 @@ def send_message(conn, conversation_id: int, sender_id: int, content: str) -> di
         WHERE id = %s
     """, (sender_id,))
     sender = cur.fetchone()
-    
+
     # Convert datetime to ISO format string for JSON serialization
-    created_at = message[4]
+    created_at = message["created_at"]
     if isinstance(created_at, datetime):
         created_at = created_at.isoformat()
-    
+
     message_data = {
-        "id": message[0],
-        "conversation_id": message[1],
-        "sender_id": message[2],
-        "content": message[3],
+        "id": message["id"],
+        "conversation_id": message["conversation_id"],
+        "sender_id": message["sender_id"],
+        "content": message["content"],
         "created_at": created_at,
-        "is_read": message[5],
+        "is_read": message["is_read"],
         "sender": {
             "id": sender_id,
-            "email": sender[0] if sender else None,
-            "username": sender[1] if sender else None,
-            "is_admin": sender[2] if sender else False
+            "email": sender["email"] if sender else None,
+            "username": sender["username"] if sender else None,
+            "is_admin": sender["is_admin"] if sender else False
         } if sender else None
     }
     
@@ -389,9 +389,9 @@ def get_all_users_for_broadcast(conn, admin_id: int) -> List[dict]:
     rows = cur.fetchall()
     users = [
         {
-            "id": row[0], 
-            "email": row[1], 
-            "username": row[1]
+            "id": row["id"],
+            "email": row["email"],
+            "username": row["email"]
         }
         for row in rows
     ]
@@ -417,8 +417,8 @@ def get_unread_counts(conn, user_id: int) -> dict:
     
     rows = cur.fetchall()
     
-    total_unread = sum(row[1] for row in rows)
-    conversations = [{"conversation_id": row[0], "unread_count": row[1]} for row in rows]
+    total_unread = sum(row["unread_count"] for row in rows)
+    conversations = [{"conversation_id": row["id"], "unread_count": row["unread_count"]} for row in rows]
     
     return {
         "total_unread": total_unread,
@@ -743,7 +743,7 @@ async def websocket_endpoint(
             await websocket.close(code=1008, reason="User not found")
             return
             
-        user_id = user_row[0]
+        user_id = user_row["id"]
         print(f"Found user ID: {user_id} for email: {email}")
         
         cur.execute("""

@@ -679,7 +679,7 @@ def get_all_twitter_accounts_with_tokens() -> list:
                     tt.access_token,
                     tt.refresh_token,
                     tt.expires_at
-                FROM accounts a
+                FROM app.accounts a
                 JOIN twitter_tokens tt ON tt.account_id = a.id
                 WHERE LOWER(a.platform) = 'twitter'
             """)

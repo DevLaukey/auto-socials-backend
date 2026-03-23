@@ -12,7 +12,7 @@ import re
 from datetime import datetime
 
 from app.celery_app import celery_app
-from app.services.database import get_conn
+from app.services.database import connect
 
 logger = logging.getLogger(__name__)
 
@@ -21,41 +21,42 @@ logger = logging.getLogger(__name__)
 def execute_comment_job(self, comment_job_id: int):
     """Execute a comment job."""
     logger.info(f"[COMMENT WORKER] Starting comment job {comment_job_id}")
-    
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            # Get job details
-            cur.execute("""
-                SELECT 
-                    cj.id, cj.user_id, cj.account_id, cj.post_id,
-                    cj.target_url, cj.comment_text, cj.status,
-                    cj.attempts, cj.max_attempts,
-                    a.platform, a.account_username, a.password
-                FROM comment_jobs cj
-                JOIN accounts a ON a.id = cj.account_id
-                WHERE cj.id = %s
-            """, (comment_job_id,))
-            
-            job = cur.fetchone()
-            
-            if not job:
-                logger.error(f"Comment job {comment_job_id} not found")
-                return
-            
-            # Update to processing
-            cur.execute("""
-                UPDATE comment_jobs
-                SET status = 'processing', attempts = attempts + 1
-                WHERE id = %s
-            """, (comment_job_id,))
-            conn.commit()
-    
+
+    conn = connect()
     try:
-        # Determine platform and post comment
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT
+                cj.id, cj.user_id, cj.account_id, cj.post_id,
+                cj.target_url, cj.comment_text, cj.status,
+                cj.attempts, cj.max_attempts,
+                a.platform, a.account_username, a.password
+            FROM comment_jobs cj
+            JOIN accounts a ON a.id = cj.account_id
+            WHERE cj.id = %s
+        """, (comment_job_id,))
+
+        job = cur.fetchone()
+
+        if not job:
+            logger.error(f"Comment job {comment_job_id} not found")
+            return
+
+        # Update to processing
+        cur.execute("""
+            UPDATE comment_jobs
+            SET status = 'processing', attempts = attempts + 1
+            WHERE id = %s
+        """, (comment_job_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    try:
         platform = job['platform'].lower()
-        
+
         success = False
-        
+
         if platform == 'instagram':
             success = _post_instagram_comment(
                 account_id=job['account_id'],
@@ -78,48 +79,50 @@ def execute_comment_job(self, comment_job_id: int):
             )
         else:
             raise ValueError(f"Unsupported platform: {platform}")
-        
+
         if success:
-            # Mark as completed
-            with get_conn() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        UPDATE comment_jobs
-                        SET status = 'completed', executed_time = NOW()
-                        WHERE id = %s
-                    """, (comment_job_id,))
-                    conn.commit()
-            
+            conn = connect()
+            try:
+                cur = conn.cursor()
+                cur.execute("""
+                    UPDATE comment_jobs
+                    SET status = 'completed', executed_time = NOW()
+                    WHERE id = %s
+                """, (comment_job_id,))
+                conn.commit()
+            finally:
+                conn.close()
+
             logger.info(f"[COMMENT WORKER] Comment job {comment_job_id} completed")
         else:
             raise Exception("Comment posting failed")
-            
+
     except Exception as e:
         logger.error(f"[COMMENT WORKER] Comment job {comment_job_id} failed: {e}")
-        
-        # Retry logic
-        with get_conn() as conn:
-            with conn.cursor() as cur:
+
+        conn = connect()
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT attempts, max_attempts
+                FROM comment_jobs
+                WHERE id = %s
+            """, (comment_job_id,))
+            job_status = cur.fetchone()
+
+            if job_status and job_status['attempts'] < job_status['max_attempts']:
+                retry_delay = 60 * (2 ** (job_status['attempts'] - 1))
+                logger.info(f"Retrying comment job {comment_job_id} in {retry_delay}s")
+                self.retry(countdown=retry_delay)
+            else:
                 cur.execute("""
-                    SELECT attempts, max_attempts
-                    FROM comment_jobs
+                    UPDATE comment_jobs
+                    SET status = 'failed', error_message = %s
                     WHERE id = %s
-                """, (comment_job_id,))
-                job_status = cur.fetchone()
-                
-                if job_status and job_status['attempts'] < job_status['max_attempts']:
-                    # Retry with exponential backoff
-                    retry_delay = 60 * (2 ** (job_status['attempts'] - 1))
-                    logger.info(f"Retrying comment job {comment_job_id} in {retry_delay}s")
-                    self.retry(countdown=retry_delay)
-                else:
-                    # Mark as failed
-                    cur.execute("""
-                        UPDATE comment_jobs
-                        SET status = 'failed', error_message = %s
-                        WHERE id = %s
-                    """, (str(e), comment_job_id))
-                    conn.commit()
+                """, (str(e), comment_job_id))
+                conn.commit()
+        finally:
+            conn.close()
 
 
 def _post_instagram_comment(account_id, username, password, target_url, comment):
@@ -160,24 +163,24 @@ def _post_twitter_comment(account_id, target_url, comment):
     try:
         from app.services.auth_database import get_twitter_token
         from app.services.twitter_service import TwitterService
-        
+
         tweet_id = _extract_tweet_id(target_url)
         if not tweet_id:
             raise ValueError(f"Could not extract tweet ID from URL: {target_url}")
-        
+
         creds = get_twitter_token(account_id)
         if not creds:
             raise ValueError(f"No Twitter token for account {account_id}")
-        
+
         service = TwitterService(account_id, creds)
         result = service.post_tweet(
             text=comment,
             reply_to_tweet_id=tweet_id
         )
-        
+
         logger.info(f"Twitter reply posted: {result.get('tweet_id')}")
         return True
-        
+
     except Exception as e:
         logger.error(f"Twitter comment failed: {e}")
         return False

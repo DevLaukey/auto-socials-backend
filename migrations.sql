@@ -1087,11 +1087,15 @@ BEGIN
     
     -- youtube_tokens foreign keys
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='youtube_tokens_account_id_fkey') THEN
+        -- Remove orphaned rows that would violate the constraint
+        DELETE FROM auth.youtube_tokens WHERE account_id NOT IN (SELECT id FROM app.accounts);
         ALTER TABLE auth.youtube_tokens ADD CONSTRAINT youtube_tokens_account_id_fkey FOREIGN KEY (account_id) REFERENCES app.accounts(id) ON DELETE CASCADE;
     END IF;
-    
+
     -- twitter_tokens foreign keys
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='twitter_tokens_account_id_fkey') THEN
+        -- Remove orphaned rows that would violate the constraint
+        DELETE FROM auth.twitter_tokens WHERE account_id NOT IN (SELECT id FROM app.accounts);
         ALTER TABLE auth.twitter_tokens ADD CONSTRAINT twitter_tokens_account_id_fkey FOREIGN KEY (account_id) REFERENCES app.accounts(id) ON DELETE CASCADE;
     END IF;
 END $$;

@@ -171,9 +171,9 @@ def list_social_accounts(user=Depends(get_current_user)):
 
     return [
         SocialAccountResponse(
-            id=row[0],
-            platform=row[1],
-            account_username=row[2],
+            id=row["id"],
+            platform=row["platform"],
+            account_username=row["account_username"],
             group_id=None,
             status="connected",
         )
@@ -291,7 +291,7 @@ def remove_social_account(
     user_id = current_user["id"]
 
     accounts = get_accounts(user_id)
-    account_ids = [acc[0] for acc in accounts]
+    account_ids = [acc["id"] for acc in accounts]
 
     if account_id not in account_ids:
         raise HTTPException(

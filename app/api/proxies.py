@@ -46,10 +46,10 @@ def list_proxies(user=Depends(get_current_user)):
     rows = get_all_proxies(user_id)
     return [
         {
-            "id": r[0],
-            "proxy_address": r[1],
-            "proxy_type": r[2],
-            "is_active": bool(r[3]),
+            "id": r["id"],
+            "proxy_address": r["proxy_address"],
+            "proxy_type": r["proxy_type"],
+            "is_active": bool(r["is_active"]),
         }
         for r in rows
     ]

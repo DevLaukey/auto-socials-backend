@@ -60,8 +60,8 @@ def list_groups(user=Depends(get_current_user), db=Depends(get_db)):
 
     return [
         {
-            "id": row[0],
-            "name": row[1],
+            "id": row["id"],
+            "name": row["group_name"],
         }
         for row in rows
     ]
@@ -103,7 +103,7 @@ def create_group(
     db.commit()
 
     return {
-        "id": row[0],
+        "id": row["id"],
         "name": payload.group_name,
     }
 
@@ -137,8 +137,8 @@ def update_group(
 
     db.commit()
     return {
-        "id": row[0],
-        "name": row[1],
+        "id": row["id"],
+        "name": row["group_name"],
     }
 
 
@@ -223,10 +223,10 @@ def group_accounts(
 
     return [
         {
-            "id": row[0],
-            "userId": row[1],
-            "platform": row[2],
-            "accountUsername": row[3],
+            "id": row["id"],
+            "userId": row["user_id"],
+            "platform": row["platform"],
+            "accountUsername": row["account_username"],
         }
         for row in rows
     ]

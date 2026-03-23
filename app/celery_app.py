@@ -137,25 +137,26 @@ def process_due_comments_task():
     This task finds all pending comment jobs that are scheduled to run now
     and queues them for execution.
     """
-    from app.services.database import get_conn
+    from app.services.database import connect
     from app.workers.comment_worker import execute_comment_job
-    
+
     logger.info("[CELERY] Checking for due comments")
-    
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            # Find all pending comment jobs that are due
-            cur.execute("""
-                SELECT id
-                FROM comment_jobs
-                WHERE status = 'pending'
-                AND (scheduled_time IS NULL OR scheduled_time <= NOW())
-                AND attempts < max_attempts
-                ORDER BY scheduled_time ASC NULLS FIRST
-                LIMIT 100  -- Process in batches
-            """)
-            
-            jobs = cur.fetchall()
+
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id
+            FROM comment_jobs
+            WHERE status = 'pending'
+            AND (scheduled_time IS NULL OR scheduled_time <= NOW())
+            AND attempts < max_attempts
+            ORDER BY scheduled_time ASC NULLS FIRST
+            LIMIT 100  -- Process in batches
+        """)
+        jobs = cur.fetchall()
+    finally:
+        conn.close()
     
     if jobs:
         logger.info(f"[CELERY] Found {len(jobs)} due comment jobs")
@@ -172,25 +173,26 @@ def process_due_dms_task():
     """
     Process DMs that are due for execution.
     """
-    from app.services.database import get_conn
+    from app.services.database import connect
     from app.workers.dm_worker import execute_dm_job
-    
+
     logger.info("[CELERY] Checking for due DMs")
-    
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            # Find all pending DM jobs that are due
-            cur.execute("""
-                SELECT id
-                FROM dm_jobs
-                WHERE status = 'pending'
-                AND (scheduled_time IS NULL OR scheduled_time <= NOW())
-                AND attempts < max_attempts
-                ORDER BY scheduled_time ASC NULLS FIRST
-                LIMIT 100  -- Process in batches
-            """)
-            
-            jobs = cur.fetchall()
+
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id
+            FROM dm_jobs
+            WHERE status = 'pending'
+            AND (scheduled_time IS NULL OR scheduled_time <= NOW())
+            AND attempts < max_attempts
+            ORDER BY scheduled_time ASC NULLS FIRST
+            LIMIT 100  -- Process in batches
+        """)
+        jobs = cur.fetchall()
+    finally:
+        conn.close()
     
     if jobs:
         logger.info(f"[CELERY] Found {len(jobs)} due DM jobs")

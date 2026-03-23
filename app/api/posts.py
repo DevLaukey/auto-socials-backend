@@ -169,7 +169,7 @@ def _get_platform_for_account(account_id: int, db) -> str:
         (account_id,)
     )
     row = cursor.fetchone()
-    return row[0].lower() if row else None
+    return row["platform"].lower() if row else None
 
 
 def _build_post_url(platform: str, post_id: int, account_username: str = None) -> str:
@@ -410,7 +410,7 @@ def initiate_post_payment(
             tuple(payload.group_ids),
         )
 
-        final_account_ids.update(row[0] for row in cursor.fetchall())
+        final_account_ids.update(row["account_id"] for row in cursor.fetchall())
 
     final_account_ids = list(final_account_ids)
 
@@ -513,7 +513,7 @@ def initiate_post_payment_with_method(
             tuple(payload.group_ids),
         )
 
-        final_account_ids.update(row[0] for row in cursor.fetchall())
+        final_account_ids.update(row["account_id"] for row in cursor.fetchall())
 
     final_account_ids = list(final_account_ids)
 
@@ -641,7 +641,7 @@ def initiate_post_payment_paypal(
             tuple(payload.group_ids),
         )
 
-        final_account_ids.update(row[0] for row in cursor.fetchall())
+        final_account_ids.update(row["account_id"] for row in cursor.fetchall())
 
     final_account_ids = list(final_account_ids)
 
@@ -823,7 +823,7 @@ def create_post(
             tuple(payload.group_ids),
         )
 
-        final_account_ids.update(row[0] for row in cursor.fetchall())
+        final_account_ids.update(row["account_id"] for row in cursor.fetchall())
 
     final_account_ids = list(final_account_ids)
 
@@ -1238,7 +1238,7 @@ def resolve_group_accounts(
 
     return {
         "group_ids": group_ids,
-        "account_ids": [row[0] for row in cursor.fetchall()],
+        "account_ids": [row["account_id"] for row in cursor.fetchall()],
     }
 
 

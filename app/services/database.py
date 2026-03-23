@@ -49,6 +49,7 @@ def get_db():
         conn.close()
 
 @contextlib.contextmanager
+@contextlib.contextmanager
 def get_conn():
     """Get a database connection as a context manager."""
     conn = connect()
@@ -461,7 +462,7 @@ def add_account(user_id, platform, account_username, password):
             RETURNING id
         """, (user_id, platform, account_username, password))
         conn.commit()
-        return c.fetchone()[0]
+        return c.fetchone()["id"]
     except psycopg2.errors.UniqueViolation:
         conn.rollback()
         raise ValueError(
@@ -538,12 +539,12 @@ def get_accounts_by_filters(
     if return_dict:
         return [
             {
-                "id": row[0],
-                "platform": row[1],
-                "account_username": row[2],
-                "password": row[3],
-                "group_id": row[4],
-                "group_name": row[5],
+                "id": row["id"],
+                "platform": row["platform"],
+                "account_username": row["account_username"],
+                "password": row["password"],
+                "group_id": row["group_id"],
+                "group_name": row["group_name"],
             }
             for row in results
         ]
@@ -800,9 +801,9 @@ def get_post_details_by_post_id(post_id: int):
 
     accounts = [
         {
-            "id": row[0],
-            "platform": row[1],
-            "username": row[2],
+            "id": row["id"],
+            "platform": row["platform"],
+            "username": row["account_username"],
         }
         for row in cursor.fetchall()
     ]
@@ -870,12 +871,12 @@ def get_accounts_by_post_id(post_id):
     accounts = []
     for row in c.fetchall():
         accounts.append({
-            "id": row[0],
-            "platform": row[1],
-            "account_username": row[2],
-            "password": row[3],
-            "group_id": row[4],
-            "group_name": row[5],
+            "id": row["id"],
+            "platform": row["platform"],
+            "account_username": row["account_username"],
+            "password": row["password"],
+            "group_id": row["group_id"],
+            "group_name": row["group_name"],
         })
 
     conn.close()
@@ -961,7 +962,7 @@ def get_post_status_by_id(post_id):
     c.execute("SELECT status FROM posts WHERE id = %s", (post_id,))
     row = c.fetchone()
     conn.close()
-    return row[0] if row else None
+    return row["status"] if row else None
 
 def get_all_posts_for_user(user_id: int):
     conn = connect()
@@ -987,7 +988,7 @@ def get_all_posts_for_user(user_id: int):
     results = []
 
     for row in posts:
-        post_id = row[0]
+        post_id = row["id"]
 
         cursor.execute(
             """
@@ -1004,21 +1005,21 @@ def get_all_posts_for_user(user_id: int):
 
         accounts = [
             {
-                "id": acc[0],
-                "platform": acc[1],
-                "username": acc[2],
+                "id": acc["id"],
+                "platform": acc["platform"],
+                "username": acc["account_username"],
             }
             for acc in cursor.fetchall()
         ]
 
         results.append(
             {
-                "id": row[0],
-                "title": row[1],
-                "description": row[2],
-                "status": row[3],
-                "created_at": row[4],
-                "scheduled_time": row[5],
+                "id": row["id"],
+                "title": row["title"],
+                "description": row["description"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "scheduled_time": row["scheduled_time"],
                 "accounts": accounts,
             }
         )
@@ -1399,7 +1400,7 @@ def get_user_timezone(user_id):
     try:
         c.execute("SELECT timezone FROM user_timezones WHERE user_id = %s", (user_id,))
         row = c.fetchone()
-        return row[0] if row else 'UTC'
+        return row["timezone"] if row else 'UTC'
     except Exception as e:
         logger.error(f"Error getting timezone: {e}")
         return 'UTC'
@@ -1455,10 +1456,10 @@ def get_all_youtube_accounts_with_tokens():
 
     return [
         {
-            "account_id": row[0],
-            "access_token": row[1],
-            "refresh_token": row[2],
-            "expires_at": row[3],
+            "account_id": row["account_id"],
+            "access_token": row["access_token"],
+            "refresh_token": row["refresh_token"],
+            "expires_at": row["expires_at"],
         }
         for row in rows
     ]
@@ -1588,17 +1589,17 @@ def get_clip_job(job_id: int):
         return None
 
     return {
-        "id": row[0],
-        "user_id": row[1],
-        "source_url": row[2],
-        "local_video_path": row[3],
-        "clip_length": row[4],
-        "max_clips": row[5],
-        "style": row[6],
-        "status": row[7],
-        "progress": row[8],
-        "error": row[9],
-        "created_at": row[10],
+        "id": row["id"],
+        "user_id": row["user_id"],
+        "source_url": row["source_url"],
+        "local_video_path": row["local_video_path"],
+        "clip_length": row["clip_length"],
+        "max_clips": row["max_clips"],
+        "style": row["style"],
+        "status": row["status"],
+        "progress": row["progress"],
+        "error": row["error"],
+        "created_at": row["created_at"],
     }
 
 
@@ -1616,7 +1617,7 @@ def add_clip(clip_job_id: int, file_path: str, duration: int) -> int:
         RETURNING id;
     """, (clip_job_id, file_path, duration))
 
-    clip_id = c.fetchone()[0]
+    clip_id = c.fetchone()["id"]
 
     conn.commit()
     c.close()
@@ -1655,11 +1656,11 @@ def get_clips_for_job(job_id: int):
 
     for row in rows:
         clips.append({
-            "id": row[0],
-            "job_id": row[1],  # keeping API output consistent
-            "file_path": row[2],
-            "duration": row[3],
-            "created_at": row[4],
+            "id": row["id"],
+            "job_id": row["clip_job_id"],  # keeping API output consistent
+            "file_path": row["file_path"],
+            "duration": row["duration"],
+            "created_at": row["created_at"],
         })
 
     return clips
@@ -1723,17 +1724,17 @@ def get_all_clip_jobs_for_user(user_id: int) -> List[dict]:
     jobs = []
     for row in rows:
         jobs.append({
-            "id": row[0],
-            "user_id": row[1],
-            "source_url": row[2],
-            "local_video_path": row[3],
-            "clip_length": row[4],
-            "max_clips": row[5],
-            "style": row[6],
-            "status": row[7],
-            "progress": row[8],
-            "error": row[9],
-            "created_at": row[10],
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "source_url": row["source_url"],
+            "local_video_path": row["local_video_path"],
+            "clip_length": row["clip_length"],
+            "max_clips": row["max_clips"],
+            "style": row["style"],
+            "status": row["status"],
+            "progress": row["progress"],
+            "error": row["error"],
+            "created_at": row["created_at"],
         })
     
     return jobs
@@ -1765,9 +1766,9 @@ def get_post_overview(user_id: int):
     row = cursor.fetchone()
     conn.close()
 
-    total = row[0] or 0
-    success = row[1] or 0
-    failed = row[2] or 0
+    total = row["total_posts"] or 0
+    success = row["successful_posts"] or 0
+    failed = row["failed_posts"] or 0
 
     success_rate = (success / total * 100) if total > 0 else 0
 
@@ -1799,12 +1800,15 @@ def get_platform_breakdown(user_id: int):
     conn.close()
 
     results = {}
-    for platform, success, failed in rows:
-        total = (success or 0) + (failed or 0)
+    for row in rows:
+        platform = row["platform"]
+        success = row["success_count"] or 0
+        failed = row["failed_count"] or 0
+        total = success + failed
 
         results[platform.lower()] = {
-            "success": success or 0,
-            "failed": failed or 0,
+            "success": success,
+            "failed": failed,
             "success_rate": round((success / total * 100), 2) if total > 0 else 0
         }
 
@@ -1830,7 +1834,7 @@ def get_daily_post_counts(user_id: int):
     conn.close()
 
     return [
-        {"date": str(row[0]), "count": row[1]}
+        {"date": str(row["post_date"]), "count": row["count"]}
         for row in rows
     ]
 
@@ -1857,11 +1861,11 @@ def get_engagement_stats(user_id: int):
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT 
-            COALESCE(SUM(likes), 0),
-            COALESCE(SUM(comments), 0),
-            COALESCE(SUM(views), 0),
-            COALESCE(SUM(shares), 0)
+        SELECT
+            COALESCE(SUM(likes), 0) AS total_likes,
+            COALESCE(SUM(comments), 0) AS total_comments,
+            COALESCE(SUM(views), 0) AS total_views,
+            COALESCE(SUM(shares), 0) AS total_shares
         FROM posts
         WHERE user_id = %s
         AND status = 'Success'
@@ -1870,7 +1874,10 @@ def get_engagement_stats(user_id: int):
     row = cursor.fetchone()
     conn.close()
 
-    total_likes, total_comments, total_views, total_shares = row
+    total_likes = row["total_likes"]
+    total_comments = row["total_comments"]
+    total_views = row["total_views"]
+    total_shares = row["total_shares"]
 
     total_posts_query = get_post_overview(user_id)
     total_posts = total_posts_query["successful_posts"]
@@ -1971,11 +1978,11 @@ def get_youtube_posts_with_tokens():
 
     return [
         {
-            "post_id": row[0],
-            "video_id": row[1],
-            "access_token": row[2],
-            "refresh_token": row[3],
-            "expires_at": row[4],
+            "post_id": row["id"],
+            "video_id": row["youtube_video_id"],
+            "access_token": row["access_token"],
+            "refresh_token": row["refresh_token"],
+            "expires_at": row["expires_at"],
         }
         for row in rows
     ]

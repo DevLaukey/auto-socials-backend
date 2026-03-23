@@ -264,13 +264,17 @@ def youtube_auth_start(
         if parsed.query:
             next += f"?{parsed.query}"
     
+    code_verifier = generate_code_verifier()
+    code_challenge = generate_code_challenge(code_verifier)
+
     state_payload = {
         "account_id": account_id,
         "redirect": next,
+        "code_verifier": code_verifier,
     }
 
     state = urllib.parse.quote(json.dumps(state_payload))
-    
+
     flow = get_google_flow()
 
     auth_url, _ = flow.authorization_url(
@@ -278,6 +282,8 @@ def youtube_auth_start(
         include_granted_scopes="true",
         prompt="consent",
         state=state,
+        code_challenge=code_challenge,
+        code_challenge_method="S256",
     )
 
     return RedirectResponse(auth_url, status_code=302)
@@ -301,6 +307,7 @@ def youtube_auth_callback(
 
     account_id = state_data["account_id"]
     redirect_path = state_data.get("redirect", "/")
+    code_verifier = state_data.get("code_verifier")
 
     # If redirect_path is a full URL, extract just the path
     if redirect_path.startswith(('http://', 'https://')):
@@ -310,9 +317,9 @@ def youtube_auth_callback(
         # Add back query params if needed
         if parsed.query:
             redirect_path += f"?{parsed.query}"
-    
+
     base_url = FRONTEND_BASE_URL.rstrip('/')
-    
+
     # Ensure redirect_path starts with a slash
     if not redirect_path.startswith('/'):
         redirect_path = '/' + redirect_path
@@ -328,8 +335,11 @@ def youtube_auth_callback(
     # ---- Recreate flow EXACTLY as start() ----
     flow = get_google_flow()
 
-    # ---- Exchange code ONCE ----
-    flow.fetch_token(code=code)
+    # ---- Exchange code ONCE (pass verifier if PKCE was used) ----
+    fetch_kwargs = {"code": code}
+    if code_verifier:
+        fetch_kwargs["code_verifier"] = code_verifier
+    flow.fetch_token(**fetch_kwargs)
     creds: Credentials = flow.credentials
 
     # ---- Persist token ----
