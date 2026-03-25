@@ -1816,19 +1816,20 @@ def get_platform_breakdown(user_id: int):
 
 
 
-def get_daily_post_counts(user_id: int):
+def get_daily_post_counts(user_id: int, days: int = 30):
     conn = connect()
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT 
+        SELECT
             DATE(created_at) as post_date,
             COUNT(*) as count
         FROM posts
         WHERE user_id = %s
+        AND created_at > NOW() - INTERVAL '%s days'
         GROUP BY post_date
         ORDER BY post_date ASC
-    """, (user_id,))
+    """, (user_id, days))
 
     rows = cursor.fetchall()
     conn.close()
