@@ -49,7 +49,6 @@ def get_db():
         conn.close()
 
 @contextlib.contextmanager
-@contextlib.contextmanager
 def get_conn():
     """Get a database connection as a context manager."""
     conn = connect()

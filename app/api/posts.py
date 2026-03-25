@@ -428,7 +428,7 @@ def initiate_post_payment(
                 "SELECT platform FROM accounts WHERE id = %s",
                 (account_id,)
             )
-            platform = cursor.fetchone()[0].lower()
+            platform = cursor.fetchone()["platform"].lower()
             
             try:
                 # Check if user has available post slots for this platform
@@ -531,7 +531,7 @@ def initiate_post_payment_with_method(
                 "SELECT platform FROM accounts WHERE id = %s",
                 (account_id,)
             )
-            platform = cursor.fetchone()[0].lower()
+            platform = cursor.fetchone()["platform"].lower()
             
             try:
                 check_and_consume_limit(
@@ -659,7 +659,7 @@ def initiate_post_payment_paypal(
                 "SELECT platform FROM accounts WHERE id = %s",
                 (account_id,)
             )
-            platform = cursor.fetchone()[0].lower()
+            platform = cursor.fetchone()["platform"].lower()
             
             try:
                 check_and_consume_limit(
@@ -845,7 +845,7 @@ def create_post(
                 "SELECT platform FROM accounts WHERE id = %s",
                 (account_id,)
             )
-            platform = cursor.fetchone()[0].lower()
+            platform = cursor.fetchone()["platform"].lower()
             
             # Count per platform
             platform_counts[platform] = platform_counts.get(platform, 0) + 1

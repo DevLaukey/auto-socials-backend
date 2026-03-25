@@ -366,20 +366,14 @@ def get_automation_stats(user_id: int, days: int = 30) -> dict:
             """, (user_id, days))
             dm_stats = cur.fetchone()
             
-            # AI usage stats (cost tracking)
+            # AI usage stats — only dm_messages has ai_generated column
             cur.execute("""
-                SELECT 
-                    COUNT(*) FILTER (WHERE ai_generated = TRUE) as ai_generated_comments,
-                    COUNT(*) FILTER (WHERE ai_generated = TRUE) as ai_generated_dms
-                FROM (
-                    SELECT ai_generated FROM comment_jobs WHERE user_id = %s
-                    UNION ALL
-                    SELECT ai_generated FROM dm_messages dm
-                    JOIN dm_conversations dc ON dm.conversation_id = dc.id
-                    JOIN accounts a ON a.id = dc.account_id
-                    WHERE a.user_id = %s AND dm.ai_generated = TRUE
-                ) as ai_content
-            """, (user_id, user_id))
+                SELECT COUNT(*) as ai_generated_dms
+                FROM dm_messages dm
+                JOIN dm_conversations dc ON dm.conversation_id = dc.id
+                JOIN accounts a ON a.id = dc.account_id
+                WHERE a.user_id = %s AND dm.ai_generated = TRUE
+            """, (user_id,))
             ai_stats = cur.fetchone()
     
     total_comments = comment_stats['total_comments'] or 0
@@ -409,9 +403,9 @@ def get_automation_stats(user_id: int, days: int = 30) -> dict:
             )
         },
         "ai_usage": {
-            "ai_generated_comments": ai_stats['ai_generated_comments'] or 0,
+            "ai_generated_comments": 0,
             "ai_generated_dms": ai_stats['ai_generated_dms'] or 0,
-            "total_ai_generated": (ai_stats['ai_generated_comments'] or 0) + (ai_stats['ai_generated_dms'] or 0)
+            "total_ai_generated": ai_stats['ai_generated_dms'] or 0
         }
     }
 
@@ -422,16 +416,13 @@ def get_twitter_metrics(user_id: int, days: int = 30) -> dict:
         with conn.cursor() as cur:
             # Twitter post stats
             cur.execute("""
-                SELECT 
+                SELECT
                     COUNT(*) as total_tweets,
                     COUNT(*) FILTER (WHERE p.status = 'posted') as successful_tweets,
-                    COUNT(*) FILTER (WHERE p.tweet_id IS NOT NULL) as tweets_with_ids,
-                    COUNT(*) FILTER (WHERE p.reply_to_tweet_id IS NOT NULL) as replies,
-                    COUNT(*) FILTER (WHERE p.quote_tweet_id IS NOT NULL) as quotes,
-                    SUM(p.likes) as total_likes,
-                    SUM(p.retweets) as total_retweets,
-                    SUM(p.replies) as total_replies_on_tweets,
-                    SUM(p.impressions) as total_impressions
+                    COALESCE(SUM(p.likes), 0) as total_likes,
+                    COALESCE(SUM(p.shares), 0) as total_retweets,
+                    COALESCE(SUM(p.comments), 0) as total_replies_on_tweets,
+                    COALESCE(SUM(p.views), 0) as total_impressions
                 FROM posts p
                 JOIN posts_accounts pa ON p.id = pa.post_id
                 JOIN accounts a ON pa.account_id = a.id
@@ -444,14 +435,14 @@ def get_twitter_metrics(user_id: int, days: int = 30) -> dict:
             
             # Get top performing tweets
             cur.execute("""
-                SELECT 
+                SELECT
                     p.id,
                     p.title,
                     p.created_at,
                     p.likes,
-                    p.retweets,
-                    p.replies,
-                    p.impressions,
+                    p.shares as retweets,
+                    p.comments as replies,
+                    p.views as impressions,
                     a.account_username
                 FROM posts p
                 JOIN posts_accounts pa ON p.id = pa.post_id
@@ -459,7 +450,7 @@ def get_twitter_metrics(user_id: int, days: int = 30) -> dict:
                 WHERE a.user_id = %s
                 AND LOWER(a.platform) = 'twitter'
                 AND p.status = 'posted'
-                ORDER BY (p.likes + p.retweets * 2 + p.replies * 1.5) DESC
+                ORDER BY (p.likes + p.shares * 2 + p.comments * 1.5) DESC
                 LIMIT 5
             """, (user_id,))
             
@@ -472,9 +463,6 @@ def get_twitter_metrics(user_id: int, days: int = 30) -> dict:
         "overview": {
             "total_tweets": total_tweets,
             "successful_tweets": stats['successful_tweets'] or 0,
-            "tweets_with_ids": stats['tweets_with_ids'] or 0,
-            "replies_made": stats['replies'] or 0,
-            "quotes_made": stats['quotes'] or 0,
             "success_rate": round(
                 (stats['successful_tweets'] / total_tweets * 100) 
                 if total_tweets > 0 else 0, 2
