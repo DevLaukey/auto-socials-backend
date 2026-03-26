@@ -729,6 +729,9 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='dm_jobs' AND column_name='updated_at') THEN
         ALTER TABLE dm_jobs ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='dm_jobs' AND column_name='post_id') THEN
+        ALTER TABLE dm_jobs ADD COLUMN post_id INTEGER;
+    END IF;
 END $$;
 
 -- dm_conversations table columns

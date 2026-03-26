@@ -5,7 +5,6 @@ import os
 from datetime import datetime, timedelta
 import threading
 from typing import Optional, Dict, Any
-from urllib.parse import urlparse
 
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -30,24 +29,33 @@ _DB_LOCK = threading.Lock()
 #  Hosted
 
 def get_conn():
+    import time
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
         raise RuntimeError("DATABASE_URL is not set")
 
+    from urllib.parse import urlparse
     result = urlparse(database_url)
 
-    conn = psycopg2.connect(
-        dbname=result.path.lstrip("/"),
-        user=result.username,
-        password=result.password,
-        host=result.hostname,
-        port=result.port,
-        cursor_factory=psycopg2.extras.RealDictCursor,
-    )
-    # Set search_path to auth schema for all queries
-    with conn.cursor() as cur:
-        cur.execute("SET search_path TO auth, public;")
-    return conn
+    last_err = None
+    for attempt in range(3):
+        try:
+            conn = psycopg2.connect(
+                dbname=result.path.lstrip("/"),
+                user=result.username,
+                password=result.password,
+                host=result.hostname,
+                port=result.port,
+                cursor_factory=psycopg2.extras.RealDictCursor,
+            )
+            with conn.cursor() as cur:
+                cur.execute("SET search_path TO auth, public;")
+            return conn
+        except psycopg2.OperationalError as e:
+            last_err = e
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+    raise last_err
 
 
 
@@ -57,6 +65,7 @@ def init_auth_db():
     if not database_url:
         raise RuntimeError("DATABASE_URL is not set")
 
+    from urllib.parse import urlparse
     result = urlparse(database_url)
     conn = psycopg2.connect(
         dbname=result.path.lstrip("/"),
@@ -70,11 +79,7 @@ def init_auth_db():
     with conn:
         with conn.cursor() as cur:
 
-            cur.execute("""
-            CREATE SCHEMA IF NOT EXISTS auth;
-            """)
-
-            # Set search_path so all tables are created in auth schema
+            cur.execute("CREATE SCHEMA IF NOT EXISTS auth;")
             cur.execute("SET search_path TO auth, public;")
 
             # USERS

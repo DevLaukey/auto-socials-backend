@@ -32,12 +32,20 @@ if not DATABASE_URL:
 _db_lock = threading.Lock()
 
 def connect():
-    conn = psycopg2.connect(DATABASE_URL)
-    conn.cursor_factory = RealDictCursor
-    # Set search_path to app schema for all queries
-    with conn.cursor() as cur:
-        cur.execute("SET search_path TO app, public;")
-    return conn
+    last_err = None
+    for attempt in range(3):
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            conn.cursor_factory = RealDictCursor
+            with conn.cursor() as cur:
+                cur.execute("SET search_path TO app, public;")
+            conn.commit()
+            return conn
+        except psycopg2.OperationalError as e:
+            last_err = e
+            if attempt < 2:
+                time.sleep(2 ** attempt)  # 1s, 2s
+    raise last_err
 
 
 def get_db():
@@ -63,13 +71,9 @@ def init_db():
     conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
 
-    c.execute("""
-    CREATE SCHEMA IF NOT EXISTS app;
-    """)
-
-    # Set search_path so all tables are created in app schema
-    # Include auth schema for foreign key references
+    c.execute("CREATE SCHEMA IF NOT EXISTS app;")
     c.execute("SET search_path TO app, auth, public;")
+    conn.commit()
 
     # ===========================================
     # MIGRATION: Consolidate to single auth.users
@@ -714,7 +718,7 @@ def add_post(
             share_to_feed,
         ))
 
-        post_id = cur.fetchone()[0]
+        post_id = cur.fetchone()["id"]
 
         for acc_id in account_ids:
             cur.execute(
@@ -765,25 +769,6 @@ def get_post_details_by_post_id(post_id: int):
         conn.close()
         return None
 
-    (
-        post_id,
-        user_id,
-        media_file,
-        title,
-        description,
-        hashtags,
-        tags,
-        privacy_status,
-        post_type,
-        cover_image,
-        audio_name,
-        location,
-        disable_comments,
-        share_to_feed,
-        status,
-        created_at,
-    ) = post_row
-
     # Fetch linked accounts
     cursor.execute(
         """
@@ -795,7 +780,7 @@ def get_post_details_by_post_id(post_id: int):
         JOIN accounts a ON a.id = pa.account_id
         WHERE pa.post_id = %s
         """,
-        (post_id,),
+        (post_row["id"],),
     )
 
     accounts = [
@@ -810,22 +795,22 @@ def get_post_details_by_post_id(post_id: int):
     conn.close()
 
     return {
-        "id": post_id,
-        "user_id": user_id,
-        "media_file": media_file,
-        "title": title,
-        "description": description,
-        "hashtags": hashtags,
-        "tags": tags,
-        "privacy_status": privacy_status,
-        "post_type": post_type,
-        "cover_image": cover_image,
-        "audio_name": audio_name,
-        "location": location,
-        "disable_comments": bool(disable_comments),
-        "share_to_feed": bool(share_to_feed),
-        "status": status,
-        "created_at": created_at,
+        "id": post_row["id"],
+        "user_id": post_row["user_id"],
+        "media_file": post_row["media_file"],
+        "title": post_row["title"],
+        "description": post_row["description"],
+        "hashtags": post_row["hashtags"],
+        "tags": post_row["tags"],
+        "privacy_status": post_row["privacy_status"],
+        "post_type": post_row["post_type"],
+        "cover_image": post_row["cover_image"],
+        "audio_name": post_row["audio_name"],
+        "location": post_row["location"],
+        "disable_comments": bool(post_row["disable_comments"]),
+        "share_to_feed": bool(post_row["share_to_feed"]),
+        "status": post_row["status"],
+        "created_at": post_row["created_at"],
         "accounts": accounts,
     }
 
@@ -1078,7 +1063,9 @@ def update_matching_posts_status(reference_post_id, status):
             logger.error(f"Reference post {reference_post_id} not found")
             return False
             
-        media_file, scheduled_time, created_at = ref_post
+        media_file = ref_post["media_file"]
+        scheduled_time = ref_post["scheduled_time"]
+        created_at = ref_post["created_at"]
         
         # Update all matching posts
         c.execute("""
@@ -1132,12 +1119,11 @@ def get_instagram_credentials(account_id: int):
             logger.error(f"[INSTAGRAM] No Instagram account found for account_id={account_id}")
             return None
 
-        username, password, session_data = row
-
+        session_data = row["session_data"]
         return {
-            "username": username,
-            "password": password,
-            "session": json.loads(session_data) if session_data else None,
+            "username": row["account_username"],
+            "password": row["password"],
+            "session": json.loads(session_data) if session_data and session_data.strip() else None,
         }
 
     except Exception as e:
@@ -1262,7 +1248,9 @@ def post_with_random_proxy(user_id, account_id, media_path, caption, post_id):
     if not proxy:
         raise Exception("No active proxies available")
 
-    proxy_id, proxy_address, proxy_type = proxy
+    proxy_id = proxy["id"]
+    proxy_address = proxy["proxy_address"]
+    proxy_type = proxy["proxy_type"]
 
     conn = connect()
     c = conn.cursor()
@@ -1520,7 +1508,7 @@ def create_clip_job(
             ),
         )
 
-        job_id = c.fetchone()[0]
+        job_id = c.fetchone()["id"]
         conn.commit()
         return job_id
     finally:

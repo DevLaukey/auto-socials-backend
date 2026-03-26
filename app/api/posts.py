@@ -17,7 +17,7 @@ NEW FEATURES:
 - PayPal payment support
 """
 
-from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks, Response
 from pydantic import BaseModel, Field, validator
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal, Dict, Any
@@ -266,7 +266,7 @@ def _schedule_ai_comments(
                         comment, scheduled_time
                     ))
                     
-                    job_id = cur.fetchone()[0]
+                    job_id = cur.fetchone()["id"]
                     scheduled_jobs.append({
                         "job_id": job_id,
                         "account_id": account_id,
@@ -346,16 +346,16 @@ def _schedule_ai_dms(
                 # Insert DM job
                 cur.execute("""
                     INSERT INTO dm_jobs (
-                        user_id, account_id, recipient_username, message_text,
+                        user_id, post_id, account_id, recipient_username, message_text,
                         scheduled_time, status, max_attempts
-                    ) VALUES (%s, %s, %s, %s, %s, 'pending', 3)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, 'pending', 3)
                     RETURNING id
                 """, (
-                    user_id, account_id, username, personalized_message,
+                    user_id, post_id, account_id, username, personalized_message,
                     scheduled_time
                 ))
                 
-                job_id = cur.fetchone()[0]
+                job_id = cur.fetchone()["id"]
                 scheduled_jobs.append({
                     "job_id": job_id,
                     "account_id": account_id,
@@ -386,6 +386,7 @@ def initiate_post_payment(
     db=Depends(get_db),
 ):
     """Initiate payment for creating a post using ZeroID."""
+    logger.info("initiate_post_payment called by user_id=%s", current_user["id"])
     # Normalize scheduled_time to UTC
     scheduled_time = payload.scheduled_time
     if scheduled_time:
@@ -415,6 +416,7 @@ def initiate_post_payment(
     final_account_ids = list(final_account_ids)
 
     if not final_account_ids:
+        logger.warning("initiate_post_payment: no accounts resolved for user_id=%s", current_user["id"])
         raise HTTPException(
             status_code=400,
             detail="No accounts resolved for this post",
@@ -429,7 +431,7 @@ def initiate_post_payment(
                 (account_id,)
             )
             platform = cursor.fetchone()["platform"].lower()
-            
+
             try:
                 # Check if user has available post slots for this platform
                 check_and_consume_limit(
@@ -439,6 +441,7 @@ def initiate_post_payment(
                     action="post"
                 )
             except PermissionError as e:
+                logger.warning("initiate_post_payment: limit exceeded for user_id=%s platform=%s: %s", current_user["id"], platform, e)
                 raise HTTPException(status_code=403, detail=str(e))
 
     # Store post data for later creation
@@ -472,6 +475,7 @@ def initiate_post_payment(
             amount=100,  # KES - adjust as needed
         )
 
+    logger.info("initiate_post_payment: payment_id=%s created for user_id=%s accounts=%s", payment_id, current_user["id"], final_account_ids)
     return PaymentInitiationResponse(
         payment_id=str(payment_id),
         payment_url=f"{ZEROID_POST_PAYMENT_URL}?reference={payment_id}",
@@ -799,6 +803,7 @@ def create_post(
     Create a post and schedule it via Celery.
     Supports Instagram, YouTube, and Twitter/X.
     """
+    logger.info("create_post called by user_id=%s media=%s scheduled=%s", current_user["id"], payload.media_file, payload.scheduled_time)
     # Normalize scheduled_time to UTC
     scheduled_time = payload.scheduled_time
     if scheduled_time:
@@ -828,6 +833,7 @@ def create_post(
     final_account_ids = list(final_account_ids)
 
     if not final_account_ids:
+        logger.warning("create_post: no accounts resolved for user_id=%s", current_user["id"])
         raise HTTPException(
             status_code=400,
             detail="No accounts resolved for this post",
@@ -894,8 +900,10 @@ def create_post(
             pass
 
     except ValueError as e:
+        logger.error("create_post: validation error for user_id=%s: %s", current_user["id"], e)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        logger.exception("create_post: unexpected error for user_id=%s: %s", current_user["id"], e)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to create post: {str(e)}",
@@ -903,11 +911,13 @@ def create_post(
 
     # Schedule Celery task
     if scheduled_time:
+        logger.info("create_post: post_id=%s scheduled for %s by user_id=%s", post_id, scheduled_time, current_user["id"])
         execute_scheduled_post.apply_async(
             args=[post_id],
             eta=scheduled_time,
         )
     else:
+        logger.info("create_post: post_id=%s queued for immediate execution by user_id=%s", post_id, current_user["id"])
         execute_scheduled_post.delay(post_id)
 
     return PostResponse(
@@ -1015,12 +1025,12 @@ def get_post_comments(
     
     return [
         {
-            "job_id": j[0],
-            "account_id": j[1],
-            "target_url": j[2],
-            "comment": j[3],
-            "scheduled_time": j[4],
-            "status": j[5]
+            "job_id": j["id"],
+            "account_id": j["account_id"],
+            "target_url": j["target_url"],
+            "comment": j["comment_text"],
+            "scheduled_time": j["scheduled_time"],
+            "status": j["status"]
         }
         for j in jobs
     ]
@@ -1078,12 +1088,12 @@ def get_post_dms(
     
     return [
         {
-            "job_id": j[0],
-            "account_id": j[1],
-            "recipient": j[2],
-            "message": j[3],
-            "scheduled_time": j[4],
-            "status": j[5]
+            "job_id": j["id"],
+            "account_id": j["account_id"],
+            "recipient": j["recipient_username"],
+            "message": j["message_text"],
+            "scheduled_time": j["scheduled_time"],
+            "status": j["status"]
         }
         for j in jobs
     ]
@@ -1123,10 +1133,14 @@ def cancel_dm_job(
 def get_post(
     post_id: int,
     current_user: dict = Depends(get_current_user),
+    response: Response = None,
 ):
+    logger.info("get_post: post_id=%s requested by user_id=%s", post_id, current_user["id"])
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     post = get_post_details_by_post_id(post_id)
 
     if not post:
+        logger.warning("get_post: post_id=%s not found", post_id)
         raise HTTPException(status_code=404, detail="Post not found")
 
     return post
@@ -1136,12 +1150,17 @@ def get_post(
 def get_post_status(
     post_id: int,
     current_user: dict = Depends(get_current_user),
+    response: Response = None,
 ):
+    logger.info("get_post_status: post_id=%s requested by user_id=%s", post_id, current_user["id"])
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     status_value = get_post_status_by_id(post_id)
 
     if status_value is None:
+        logger.warning("get_post_status: post_id=%s not found", post_id)
         raise HTTPException(status_code=404, detail="Post not found")
 
+    logger.debug("get_post_status: post_id=%s status=%s", post_id, status_value)
     return {
         "id": post_id,
         "status": status_value,
@@ -1149,14 +1168,19 @@ def get_post_status(
 
 
 @router.get("")
-def list_posts(current_user: dict = Depends(get_current_user)):
+def list_posts(current_user: dict = Depends(get_current_user), response: Response = None):
     """List all posts for the current user."""
-    return get_all_posts_for_user(current_user["id"])
+    logger.info("list_posts: requested by user_id=%s", current_user["id"])
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    posts = get_all_posts_for_user(current_user["id"])
+    logger.debug("list_posts: returning %s posts for user_id=%s", len(posts) if posts else 0, current_user["id"])
+    return posts
 
 
 @router.post("/{post_id}/execute")
 def execute_post_now(post_id: int):
     """Trigger immediate execution of a scheduled post."""
+    logger.info("execute_post_now: post_id=%s triggered", post_id)
     execute_scheduled_post.delay(post_id)
     return {"message": "Post execution triggered"}
 
@@ -1167,12 +1191,14 @@ def cancel_post(
     db=Depends(get_db),
 ):
     """Cancel a scheduled post."""
+    logger.info("cancel_post: post_id=%s", post_id)
     cursor = db.cursor()
 
     cursor.execute("SELECT status FROM posts WHERE id = %s", (post_id,))
     row = cursor.fetchone()
 
     if not row:
+        logger.warning("cancel_post: post_id=%s not found", post_id)
         raise HTTPException(status_code=404, detail="Post not found")
 
     cursor.execute(
@@ -1184,7 +1210,7 @@ def cancel_post(
         ("cancelled", post_id),
     )
     db.commit()
-
+    logger.info("cancel_post: post_id=%s cancelled (was %s)", post_id, row["status"])
     return {"message": "Post cancelled"}
 
 
@@ -1199,10 +1225,12 @@ def reschedule_post(
     db=Depends(get_db),
 ):
     """Reschedule a post to a new time."""
+    logger.info("reschedule_post: post_id=%s new_time=%s", post_id, payload.scheduled_time)
     cursor = db.cursor()
 
     cursor.execute("SELECT id FROM posts WHERE id = %s", (post_id,))
     if not cursor.fetchone():
+        logger.warning("reschedule_post: post_id=%s not found", post_id)
         raise HTTPException(status_code=404, detail="Post not found")
 
     cursor.execute(
