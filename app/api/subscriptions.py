@@ -46,6 +46,21 @@ class PayPalSubscribeRequest(BaseModel):
     cancel_url: str | None = None
 
 
+class MoneyMotionSubscribeRequest(BaseModel):
+    plan_id: int
+    return_url: str | None = None
+    cancel_url: str | None = None
+
+
+class PaymentMethodResponse(BaseModel):
+    payment_method: str
+    action: str
+    endpoint: str | None = None
+    data: dict | None = None
+    payment_id: str | None = None
+    payment_url: str | None = None
+
+
 class PayPalSubscribeResponse(BaseModel):
     payment_method: str
     action: str
@@ -157,7 +172,7 @@ def subscribe_paypal(
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT price FROM subscription_plans WHERE id = %s",
+                "SELECT price, name FROM subscription_plans WHERE id = %s",
                 (plan_id,),
             )
             plan = cur.fetchone()
@@ -166,6 +181,7 @@ def subscribe_paypal(
                 raise HTTPException(status_code=404, detail="Invalid plan")
 
             amount = plan["price"]
+            plan_name = plan["name"]
 
             if amount <= 0:
                 raise HTTPException(
@@ -180,6 +196,57 @@ def subscribe_paypal(
         endpoint="/paypal/create-subscription-order",
         data={
             "plan_id": plan_id,
+            "plan_name": plan_name,
+            "amount": amount,
+            "return_url": payload.return_url,
+            "cancel_url": payload.cancel_url
+        }
+    )
+
+
+@router.post("/subscribe/moneymotion")
+def subscribe_moneymotion(
+    payload: MoneyMotionSubscribeRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Subscribe to a plan using MoneyMotion.
+    Returns MoneyMotion order creation endpoint info.
+    """
+    plan_id = payload.plan_id
+
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="Missing plan_id")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT price, name FROM subscription_plans WHERE id = %s",
+                (plan_id,),
+            )
+            plan = cur.fetchone()
+
+            if not plan:
+                raise HTTPException(status_code=404, detail="Invalid plan")
+
+            amount = plan["price"]
+            plan_name = plan["name"]
+
+            if amount <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Plan price is not configured"
+                )
+
+    # Return MoneyMotion order creation info for frontend
+    return PaymentMethodResponse(
+        payment_method="moneymotion",
+        action="create_moneymotion_order",
+        endpoint="/moneymotion/create-subscription-order",
+        data={
+            "plan_id": plan_id,
+            "plan_name": plan_name,
+            "amount": amount,
             "return_url": payload.return_url,
             "cancel_url": payload.cancel_url
         }
@@ -197,6 +264,8 @@ def subscribe_with_method(
     """
     plan_id = payload.get("plan_id")
     payment_method = payload.get("payment_method", "zeroid").lower()
+    return_url = payload.get("return_url")
+    cancel_url = payload.get("cancel_url")
 
     if not plan_id:
         raise HTTPException(status_code=400, detail="Missing plan_id")
@@ -215,6 +284,12 @@ def subscribe_with_method(
 
             amount = plan["price"]
             plan_name = plan["name"]
+
+            if amount <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Plan price is not configured"
+                )
 
     # Handle different payment methods
     if payment_method == "zeroid":
@@ -240,8 +315,22 @@ def subscribe_with_method(
                 "plan_id": plan_id,
                 "plan_name": plan_name,
                 "amount": amount,
-                "return_url": payload.get("return_url"),
-                "cancel_url": payload.get("cancel_url")
+                "return_url": return_url,
+                "cancel_url": cancel_url
+            }
+        )
+
+    elif payment_method == "moneymotion":
+        return PaymentMethodResponse(
+            payment_method="moneymotion",
+            action="create_moneymotion_order",
+            endpoint="/moneymotion/create-subscription-order",
+            data={
+                "plan_id": plan_id,
+                "plan_name": plan_name,
+                "amount": amount,
+                "return_url": return_url,
+                "cancel_url": cancel_url
             }
         )
 
@@ -412,6 +501,16 @@ def get_payment_methods():
             "enabled": bool(settings.PAYPAL_CLIENT_ID and settings.PAYPAL_CLIENT_SECRET)
         }
     ]
+    
+    # Add MoneyMotion if configured
+    if settings.MONEYMOTION_API_KEY and settings.MONEYMOTION_API_SECRET:
+        methods.append({
+            "id": "moneymotion",
+            "name": "MoneyMotion",
+            "description": "Pay with MoneyMotion (MPesa, cards, etc.)",
+            "icon": "https://moneymotion.io/favicon.ico",
+            "enabled": True
+        })
 
     return {"payment_methods": methods}
 

@@ -451,6 +451,71 @@ def init_db():
         WHERE is_read = FALSE;
     """)
 
+    # ===========================================
+    # MONEYMOTION PAYMENT INTEGRATION
+    # ===========================================
+    
+    # Add provider_payment_id to payment_intents table (in auth schema)
+    # Note: This will be executed in auth_database.py as well, but we include it here for completeness
+    c.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'auth' AND table_name = 'payment_intents'
+            ) THEN
+                ALTER TABLE auth.payment_intents 
+                ADD COLUMN IF NOT EXISTS provider_payment_id TEXT;
+                
+                CREATE INDEX IF NOT EXISTS idx_payment_intents_provider_id 
+                ON auth.payment_intents(provider_payment_id);
+            END IF;
+        END $$;
+    """)
+    
+    # Add provider_payment_id to post_payment_intents table
+    c.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'auth' AND table_name = 'post_payment_intents'
+            ) THEN
+                ALTER TABLE auth.post_payment_intents 
+                ADD COLUMN IF NOT EXISTS provider_payment_id TEXT;
+                
+                CREATE INDEX IF NOT EXISTS idx_post_payment_intents_provider_id 
+                ON auth.post_payment_intents(provider_payment_id);
+            END IF;
+        END $$;
+    """)
+    
+    # Optional: Create table for MoneyMotion webhook events audit
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS auth.moneymotion_webhook_events (
+            id SERIAL PRIMARY KEY,
+            event_id TEXT UNIQUE,
+            event_type TEXT NOT NULL,
+            resource_type TEXT,
+            resource_id TEXT,
+            resource JSONB,
+            summary TEXT,
+            processed BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            processed_at TIMESTAMPTZ
+        );
+    """)
+    
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_moneymotion_events_event_id 
+        ON auth.moneymotion_webhook_events(event_id);
+    """)
+    
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_moneymotion_events_processed 
+        ON auth.moneymotion_webhook_events(processed);
+    """)
+
     conn.commit()
     conn.close()
 

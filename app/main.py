@@ -33,6 +33,7 @@ from app.api.messages import router as messages_router
 from app.services.twitter_token_service import start_token_refresh_scheduler
 
 from app.api.paypal import router as paypal_router
+from app.api.moneymotion import router as moneymotion_router
 
 
 def create_app() -> FastAPI:
@@ -79,6 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(yt_router)
     app.include_router(messages_router)
     app.include_router(paypal_router)
+    app.include_router(moneymotion_router)
 
 
     # =========================================================
