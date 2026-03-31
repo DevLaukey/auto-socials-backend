@@ -15,6 +15,7 @@ NEW FEATURES:
 - AI-powered comments automation
 - AI-powered DMs automation
 - PayPal payment support
+- MoneyMotion payment support
 """
 
 from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks, Response
@@ -88,6 +89,11 @@ class PostCreate(BaseModel):
     thread_tweets: Optional[List[str]] = None  # For multi-tweet threads
     quote_tweet_id: Optional[str] = None  # For quote tweets
     reply_to_tweet_id: Optional[str] = None  # For replies
+
+    # Payment method selection
+    payment_method: Optional[Literal["zeroid", "paypal", "moneymotion"]] = "zeroid"
+    return_url: Optional[str] = None
+    cancel_url: Optional[str] = None
 
     # Scheduling
     scheduled_time: Optional[datetime] = None
@@ -385,7 +391,7 @@ def initiate_post_payment(
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
 ):
-    """Initiate payment for creating a post using ZeroID."""
+    """Initiate payment for creating a post using ZeroID (default)."""
     logger.info("initiate_post_payment called by user_id=%s", current_user["id"])
     # Normalize scheduled_time to UTC
     scheduled_time = payload.scheduled_time
@@ -604,6 +610,19 @@ def initiate_post_payment_with_method(
             }
         )
 
+    elif payment_method == "moneymotion":
+        # Return MoneyMotion order creation info
+        return PaymentMethodResponse(
+            payment_method="moneymotion",
+            action="create_moneymotion_order",
+            endpoint="/moneymotion/create-post-order",
+            data={
+                "post_data": post_data,
+                "return_url": return_url,
+                "cancel_url": cancel_url
+            }
+        )
+
     else:
         raise HTTPException(
             status_code=400,
@@ -710,6 +729,105 @@ def initiate_post_payment_paypal(
     )
 
 
+@router.post("/initiate-payment/moneymotion")
+def initiate_post_payment_moneymotion(
+    payload: PostCreate,
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """
+    Initiate MoneyMotion payment for creating a post.
+    Returns MoneyMotion order creation info.
+    """
+    # Normalize scheduled_time to UTC
+    scheduled_time = payload.scheduled_time
+    if scheduled_time:
+        if scheduled_time.tzinfo is None:
+            scheduled_time = scheduled_time.replace(tzinfo=timezone.utc)
+        else:
+            scheduled_time = scheduled_time.astimezone(timezone.utc)
+
+    # Resolve accounts from groups
+    final_account_ids = set(payload.account_ids or [])
+
+    if payload.group_ids:
+        cursor = db.cursor()
+        placeholders = ",".join("%s" for _ in payload.group_ids)
+
+        cursor.execute(
+            f"""
+            SELECT DISTINCT account_id
+            FROM group_accounts
+            WHERE group_id IN ({placeholders})
+            """,
+            tuple(payload.group_ids),
+        )
+
+        final_account_ids.update(row["account_id"] for row in cursor.fetchall())
+
+    final_account_ids = list(final_account_ids)
+
+    if not final_account_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="No accounts resolved for this post",
+        )
+
+    # Check subscription limits for each platform
+    with get_auth_conn() as auth_conn:
+        for account_id in final_account_ids:
+            cursor = db.cursor()
+            cursor.execute(
+                "SELECT platform FROM accounts WHERE id = %s",
+                (account_id,)
+            )
+            platform = cursor.fetchone()["platform"].lower()
+            
+            try:
+                check_and_consume_limit(
+                    auth_conn,
+                    user_id=current_user["id"],
+                    platform=platform,
+                    action="post"
+                )
+            except PermissionError as e:
+                raise HTTPException(status_code=403, detail=str(e))
+
+    # Store post data for later creation
+    post_data = {
+        "account_ids": final_account_ids,
+        "media_file": payload.media_file,
+        "title": payload.title,
+        "description": payload.description,
+        "hashtags": payload.hashtags,
+        "tags": payload.tags,
+        "privacy_status": payload.privacy_status,
+        "post_type": payload.post_type,
+        "cover_image": payload.cover_image,
+        "audio_name": payload.audio_name,
+        "location": payload.location,
+        "disable_comments": payload.disable_comments,
+        "share_to_feed": payload.share_to_feed,
+        "is_thread": getattr(payload, 'is_thread', False),
+        "thread_tweets": getattr(payload, 'thread_tweets', None),
+        "quote_tweet_id": getattr(payload, 'quote_tweet_id', None),
+        "reply_to_tweet_id": getattr(payload, 'reply_to_tweet_id', None),
+        "scheduled_time": scheduled_time.isoformat() if scheduled_time else None,
+    }
+
+    # Return MoneyMotion order creation info for frontend
+    return PaymentMethodResponse(
+        payment_method="moneymotion",
+        action="create_moneymotion_order",
+        endpoint="/moneymotion/create-post-order",
+        data={
+            "post_data": post_data,
+            "return_url": getattr(payload, 'return_url', None),
+            "cancel_url": getattr(payload, 'cancel_url', None)
+        }
+    )
+
+
 @router.get("/payment-status/{payment_id}")
 def check_payment_status(
     payment_id: str,
@@ -784,6 +902,18 @@ def get_post_payment_methods():
             "enabled": True,
             "amount": 1.00,
             "currency": "USD"
+        })
+    
+    # Add MoneyMotion if configured
+    if settings.MONEYMOTION_API_KEY and settings.MONEYMOTION_API_SECRET:
+        methods.append({
+            "id": "moneymotion",
+            "name": "MoneyMotion",
+            "description": "Pay with MoneyMotion (MPesa, cards, etc.)",
+            "icon": "https://moneymotion.io/favicon.ico",
+            "enabled": True,
+            "amount": 100,
+            "currency": "KES"
         })
 
     return {"payment_methods": methods}
