@@ -503,7 +503,7 @@ def get_payment_methods():
     ]
     
     # Add MoneyMotion if configured
-    if settings.MONEYMOTION_API_KEY and settings.MONEYMOTION_API_SECRET:
+    if settings.MONEYMOTION_API_KEY:
         methods.append({
             "id": "moneymotion",
             "name": "MoneyMotion",
