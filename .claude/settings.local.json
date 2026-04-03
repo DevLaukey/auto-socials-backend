@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cd:*)"
+      "Bash(cd:*)",
+      "WebFetch(domain:docs.moneymotion.io)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     MONEYMOTION_API_KEY: str = ""  # Only this is required
     MONEYMOTION_WEBHOOK_SECRET: str = ""  # Optional, for webhook verification
     MONEYMOTION_MODE: str = "live"  # sandbox or live
-    MONEYMOTION_BASE_URL: str = "https://api.moneymotion.io/v1"  # Base API URL
+    MONEYMOTION_BASE_URL: str = "https://api.moneymotion.io"  # Base API URL
 
     # ------------------
     # Cloud Storage (Tigris / S3-compatible)
@@ -117,10 +117,7 @@ class Settings(BaseSettings):
     # ------------------
     @property
     def MONEYMOTION_API_URL(self) -> str:
-        """Get the appropriate MoneyMotion API URL based on mode."""
-        if self.MONEYMOTION_MODE == "sandbox":
-            # Update this with the actual sandbox URL from MoneyMotion
-            return "https://sandbox.api.moneymotion.io/v1"
+        """Get the MoneyMotion API URL. Sandbox vs live is determined by the API key prefix (mk_test_ vs mk_live_), not the URL."""
         return self.MONEYMOTION_BASE_URL
 
     class Config:

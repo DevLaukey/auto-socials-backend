@@ -28,10 +28,12 @@ class MoneyMotionService:
         self.webhook_secret = settings.MONEYMOTION_WEBHOOK_SECRET  # Optional
         self.api_url = settings.MONEYMOTION_API_URL
 
-    def _get_headers(self) -> Dict[str, str]:
+    def _get_headers(self, currency: str = "USD") -> Dict[str, str]:
         """Get headers for MoneyMotion API requests."""
+        key = settings.MONEYMOTION_API_KEY
         return {
-            "Authorization": f"Bearer {self.api_key}",
+            "X-API-Key": key,
+            "x-currency": currency,
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
@@ -40,16 +42,17 @@ class MoneyMotionService:
         self,
         user_id: int,
         amount: float,
-        currency: str = "KES",
+        currency: str = "USD",
         description: str = "Payment",
         reference: str = None,
         return_url: str = None,
         cancel_url: str = None,
-        webhook_url: str = None
+        webhook_url: str = None,
+        email: str = None
     ) -> Dict[str, Any]:
         """
         Create a payment order with MoneyMotion.
-        
+
         Args:
             user_id: User ID for reference
             amount: Payment amount
@@ -59,38 +62,56 @@ class MoneyMotionService:
             return_url: URL to redirect after successful payment
             cancel_url: URL to redirect after cancelled payment
             webhook_url: Webhook URL for payment notifications
-        
+            email: User email for MoneyMotion userInfo
+
         Returns:
-            Payment data with checkout URL
+            Payment data with checkoutSessionId and checkoutUrl
         """
-        if not self.api_key:
+        if not settings.MONEYMOTION_API_KEY:
             raise RuntimeError("MoneyMotion API key not configured")
-        
-        url = f"{self.api_url}/payments"
-        
+
+        url = f"{self.api_url}/checkoutSessions.createCheckoutSession"
+
         # Generate reference if not provided
         if not reference:
             reference = f"payment_{user_id}_{int(datetime.utcnow().timestamp())}"
-        
-        payload = {
-            "amount": amount,
-            "currency": currency,
+
+        success_url = return_url or f"{settings.FRONTEND_BASE_URL}/payment/success"
+        cancel_url = cancel_url or f"{settings.FRONTEND_BASE_URL}/payment/cancel"
+
+        inner = {
             "description": description,
-            "reference": reference,
-            "return_url": return_url or f"{settings.FRONTEND_BASE_URL}/payment/success",
-            "cancel_url": cancel_url or f"{settings.FRONTEND_BASE_URL}/payment/cancel",
-            "webhook_url": webhook_url or f"{settings.API_BASE_URL}/api/moneymotion/webhook"
+            "urls": {
+                "success": success_url,
+                "cancel": cancel_url,
+                "failure": cancel_url,
+            },
+            "userInfo": {"email": email or ""},
+            "lineItems": [
+                {
+                    "name": description,
+                    "description": description,
+                    "pricePerItemInCents": int(amount * 100),
+                    "quantity": 1,
+                }
+            ],
+            "metadata": {"reference": reference, "user_id": str(user_id)},
         }
-        
+
+        payload = {"json": inner}
+
         try:
-            response = requests.post(url, headers=self._get_headers(), json=payload, timeout=30)
+            response = requests.post(url, headers=self._get_headers(currency), json=payload, timeout=30)
             response.raise_for_status()
-            payment_data = response.json()
-            
-            logger.info(f"Created MoneyMotion payment {payment_data.get('id')} for user {user_id}, amount: {amount} {currency}")
-            
-            return payment_data
-            
+            data = response.json()
+
+            # tRPC response shape: { result: { data: { json: { checkoutSessionId, checkoutUrl } } } }
+            session = data.get("result", {}).get("data", {}).get("json", {})
+
+            logger.info(f"Created MoneyMotion payment {session.get('checkoutSessionId')} for user {user_id}, amount: {amount} {currency}")
+
+            return session
+
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to create MoneyMotion payment: {e}")
             if hasattr(e, 'response') and e.response:
@@ -99,10 +120,10 @@ class MoneyMotionService:
     
     def get_payment_status(self, payment_id: str) -> Dict[str, Any]:
         """Get status of a payment."""
-        if not self.api_key:
+        if not settings.MONEYMOTION_API_KEY:
             raise RuntimeError("MoneyMotion API key not configured")
-        
-        url = f"{self.api_url}/payments/{payment_id}"
+
+        url = f"{self.api_url}/checkoutSessions.getCompletedOrPendingCheckoutSessionInfo"
         
         try:
             response = requests.get(url, headers=self._get_headers(), timeout=30)

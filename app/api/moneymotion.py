@@ -83,13 +83,16 @@ async def create_subscription_order(
         payment = moneymotion_service.create_payment(
             user_id=current_user["id"],
             amount=float(plan["price"]),
-            currency="KES",
+            currency="USD",
             description=f"Subscription: {plan['name']}",
             reference=str(payment_id),
             return_url=payload.return_url,
-            cancel_url=payload.cancel_url
+            cancel_url=payload.cancel_url,
+            email=current_user.get("email")
         )
-        
+
+        session_id = payment.get("checkoutSessionId")
+
         # Update payment intent with MoneyMotion payment ID
         with get_conn() as conn:
             with conn.cursor() as cur:
@@ -98,12 +101,12 @@ async def create_subscription_order(
                     SET payment_method = 'moneymotion',
                         provider_payment_id = %s
                     WHERE id = %s
-                """, (payment.get("id"), str(payment_id)))
+                """, (session_id, str(payment_id)))
                 conn.commit()
-        
+
         return MoneyMotionOrderResponse(
-            payment_id=payment.get("id"),
-            checkout_url=payment.get("checkout_url"),
+            payment_id=session_id,
+            checkout_url=payment.get("checkoutUrl"),
             reference=str(payment_id)
         )
         
@@ -140,13 +143,16 @@ async def create_post_order(
         payment = moneymotion_service.create_payment(
             user_id=current_user["id"],
             amount=100.00,  # KES
-            currency="KES",
+            currency="USD",
             description="Social Media Post",
             reference=payment_id_str,
             return_url=payload.return_url,
-            cancel_url=payload.cancel_url
+            cancel_url=payload.cancel_url,
+            email=current_user.get("email")
         )
-        
+
+        session_id = payment.get("checkoutSessionId")
+
         # Update payment intent with MoneyMotion payment ID
         with get_conn() as conn:
             with conn.cursor() as cur:
@@ -155,12 +161,12 @@ async def create_post_order(
                     SET payment_method = 'moneymotion',
                         provider_payment_id = %s
                     WHERE id = %s
-                """, (payment.get("id"), payment_id_str))
+                """, (session_id, payment_id_str))
                 conn.commit()
-        
+
         return MoneyMotionOrderResponse(
-            payment_id=payment.get("id"),
-            checkout_url=payment.get("checkout_url"),
+            payment_id=session_id,
+            checkout_url=payment.get("checkoutUrl"),
             reference=payment_id_str
         )
         
